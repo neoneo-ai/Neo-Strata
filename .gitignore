@@ -1,0 +1,18 @@
+# .gitignore - Neo 仓库里不进版本库的东西
+
+# 引擎源码树：neo/engine_setup.py 按 neo/engine_ref.json 的 pin 克隆/解包出来的。
+# 它是"测试跑在哪个引擎根上"的那个根，内容跟着 pin 走，不进仓库。
+/strata/
+
+# 打包产物（python -m neo.build_exe 打出来的）
+/neo/build/
+/neo/dist/
+/NeoStrata.exe
+
+# 运行状态：启动设置、窗口几何、日志、接入配置（neo/install_neo.py 与页面写出来的）
+/neo/state/
+
+# Python
+__pycache__/
+*.pyc
+/.venv/
