@@ -20,6 +20,8 @@ python -m neo.webcheck
 `strata/` 是 Neo 真会用的那个引擎根：`neo/paths.py::strata_root()` 一条规则算出它
 （`--root` > `NEO_STRATA_ROOT` > 目录里有 `setup.py` + `serve/server.py` > `<app>/strata` >
 应用目录本身），测试走的是同一条规则（`neo/tests/_bootstrap.py` 里的 `ENGINE`）。
+命令行（`neo.wizard` / `neo.models` / `neo.model_settings` / `neo.connect`）不给 `--root` 时
+走的也是这一条（`neo/paths.py::resolve_root()`），所以在这个仓库里不用点名指目录。
 对着一个完整的 Strata 检出跑测试就给它：`NEO_STRATA_ROOT=D:\Work\Strata`。
 
 ## 测试
