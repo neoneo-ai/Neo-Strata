@@ -1427,6 +1427,14 @@ with it, no leftover process. The browser fallback path was verified the same wa
   measurement.
 - Upstream changes go through the fork (`neoneo-ai/Neo-Strata`, renamed `strata-upstream`);
   `neo/tests/test_upstream_api.py` watches upstream's shape, and Neo's patch markers must stay absent.
+  The fork carries **no Neo code** - two copies of the same code drift, and they had: measured 2026-10-14,
+  that tree's `README.md` was Neo's README (upstream's own README had been overwritten by it, and it still
+  said the supervisor auto-restarts a crash, a behavior removed 2026-10-13). Commit `9c4d68f1` deleted
+  `neo/`, `docs/NEO_DESKTOP.md` and `NEO-START.bat` there - 69 tracked files - and put `README.md`,
+  `AGENTS.md` and `.gitignore` back to `v0.1.43.1`. Measured after the removal: `git ls-files` in that tree
+  has 0 paths containing `neo`, and `git diff v0.1.43.1 HEAD` is 3 upstream-side doc files
+  (`docs/AI_SETUP.md`, `docs/DETAILS.md`, `docs/MODELS.md`); `serve/`, `setup.py`, `src/` and `include/`
+  already matched the pin. Neo's code and docs live in this repository only.
 - Docs style: plain words, measured numbers with the machine they were measured on, no conclusions
   without measurement.
 

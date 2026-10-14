@@ -90,7 +90,14 @@ Neo 是 Strata 的桌面管理层：窗口外壳、进程监督（**崩了不自
 ## 上游侧的改动不放这里
 
 对 `serve/server.py`、`setup.py` 这些上游文件的改动走 fork（`neoneo-ai/Neo-Strata`，改名后
-`strata-upstream`），那儿是上游跟踪与提 PR 的基线。`neo/tests/test_upstream_api.py` 盯着上游的形状：
+`strata-upstream`），那儿是上游跟踪与提 PR 的基线。**fork 里不留 Neo 的任何代码**——两份同样的代码必然
+漂：实测 2026-10-14 那棵树的 `README.md` 已经是 Neo 的 README（上游那份被覆盖，里面还写着"崩溃自动重启"
+这条早就删掉的行为）。`9c4d68f1` 把 `neo/`、`docs/NEO_DESKTOP.md`、`NEO-START.bat` 共 69 个跟踪文件删掉，
+`README.md` / `AGENTS.md` / `.gitignore` 回到 `v0.1.43.1`；删完量：`git ls-files` 里含 `neo` 的 0 条，
+`git diff v0.1.43.1 HEAD` 只剩 `docs/AI_SETUP.md` / `docs/DETAILS.md` / `docs/MODELS.md` 三处上游侧文档改动
+（`serve/`、`setup.py`、`src/`、`include/` 本来就与 pin 一致）。Neo 的代码与文档只住本仓库。
+
+`neo/tests/test_upstream_api.py` 盯着上游的形状：
 key 只管推理，监控的只读端点对端地址是 loopback 且 `Host` 对得上的请求放行；Neo 的补丁标记必须
 保持不出现。嵌入的监控页读 Strata 一律经过 Neo（`neo/console_server.py` 在 `/strata/` 下代理上游页面
 与只读端点：只 GET/HEAD、固定路径菜单、`POST` 405、推理路由不转发、上游不在 502、8 MB 与 5 s 上限，
