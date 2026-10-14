@@ -1,349 +1,425 @@
-# Neo Strata 桌面管理器
+# Neo — the Strata desktop manager
 
-Neo 是 Strata 的桌面管理层：一个窗口，管着模型的启动、停止、日志和接入（服务崩了 Neo 不自动
-重启，只记下退出码并给一句诊断，2026-10-13）。
-它住在 `neo/` 里，只通过上游已有的命令行参数、环境变量和 HTTP 端点与 Strata 打交道，
-**不修改仓库里的任何现有文件**，所以上游更新时 Neo 不会与之冲突。
+> **English (default).** 中文版本：[docs/zh/NEO_DESKTOP.zh-CN.md](zh/NEO_DESKTOP.zh-CN.md)
+> README: [README.md](../README.md) (English) · [README.zh-CN.md](../README.zh-CN.md) (中文)
 
-当前进度：**M1 完成**（桌面壳 + 进程监督 + 状态/日志/聊天/监控页；监督器不自动重启，见下面
-「监督器的行为」）。
-M2（安装向导与国内网络自动判断）、M3（局域网访问、token 与 Claude Code / Codex 接入）、
-M4（llama.cpp 引擎适配与打包）还没开始。
+Neo is the desktop layer over Strata: one window that starts, stops, logs and connects models.
+When the service crashes, Neo does **not** restart it — it records the exit code and one line of
+diagnosis and waits for the user to press "Start" (2026-10-13). It lives in `neo/`, talks to Strata
+only through the command-line arguments, environment variables and HTTP endpoints upstream already
+has, and **does not modify any existing file in the repository** — so upstream updates never
+conflict with Neo.
 
-## 怎么起来
+Progress: **M1 is done** (desktop shell + process supervision + status / log / chat / monitor
+pages; the supervisor does not auto-restart, see "Supervisor behaviour"). The M2 and M3 features
+(install wizard and download-source probe, LAN access, tokens, Claude Code / Codex wiring, engine
+source tree) are implemented and are described with measurements in the sections below. M4
+(llama.cpp engine adapter) has not started.
 
-```
-python neo/install_neo.py          # 装 pywebview（装进 Strata 的 .venv，没有 .venv 就装当前 Python）
-NEO-START.bat                      # Windows 双击/命令行启动；没有控制台用 neo\NEO-START.vbs
-python neo/manager.py              # 直接跑；--engine mock 用 mock 引擎，--no-webview 用浏览器
-NeoStrata.exe                      # 打好的单文件 exe，放进 Strata 的根目录双击就跑（见"打成 exe"）
-```
-
-pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或没装 pywebview 时，
-`neo/manager.py` 自动退回浏览器界面 —— 控制台服务是标准库写的，功能一样，只是没有原生窗口。
-这条路上进程在后台挂着、屏幕上什么都没有，所以"第二个实例被挡住了"那句话必须说清
-在跑的是谁（见下面"第二个实例"）。
-
-**控制台被 QuickEdit 卡住**：用控制台方式跑（`.bat` / `python -m neo.manager`）时，在窗口里
-点一下就会进入选择状态，控制台缓冲区被选中后写 stdout 的线程会停在那里 —— Neo 的
-输出走这条线程，窗口就"未响应"了。三个办法：在控制台属性里关掉 QuickEdit；用
-`neo\NEO-START.vbs`（没有控制台）；用 `NeoStrata.exe`（窗口版，根本没有控制台）。
-
-### 双击闪退（已修）
-
-双击 `NEO-START.bat` 窗口一闪就没，实测有两个来源：
-
-- 启动器写的是 `python neo\manager.py`。`neo/manager.py` 顶部是包内相对导入，直接当脚本跑会抛
-  `ImportError: attempted relative import with no known parent package`，进程立刻退出。现在启动器
-  统一走 `-m neo.manager`（`.bat` / `.vbs` / `.ps1` 都改了），`manager.py` 自己也认下 `neo` 包，
-  两种跑法都能起来（实测 `python neo\manager.py --help` 与 `python -m neo.manager --help` 都退 0）。
-- 退出码非 0 时 `.bat` 以前直接关窗口，看不到原因。现在窗口留着，打印退出码和
-  `neo\state\logs\manager.log` 的最后 15 行，按任意键才关；`.bat` 开头加了 `chcp 65001`，
-  中文日志在控制台里不再成乱码。
-
-**第二个实例**（比如上一次没退干净）弹"Neo 已经在运行了"模态提示后退出 —— 这个框要点掉，
-不是闪退。端口被上一次留下的服务占着时，新实例会接手它（状态页显示"接手已在运行的服务"）。
-
-互斥体按**根目录**分开（`neo/manager.py` 的 `mutex_name_for(root)`）：两个不同 Strata 目录
-各跑一个 Neo 不互相挡；同一个目录跑第二个才被挡。第二个实例要说清"在跑的是谁"，靠的是
-`neo/state/instance.json`（`state.record_instance()` 记的 pid / root / 端口 / 界面地址 /
-窗口还是浏览器，`atexit` 在退出时抹掉）：
+## How it starts
 
 ```
-已经有一个 Neo 在跑：进程 47308，根目录 D:\Work\Strata。
-它的界面在 http://127.0.0.1:8083/
-要关掉它：任务管理器里结束进程 47308。要绕过这个检查：加 --force。
+python neo/install_neo.py          # installs pywebview (into Strata's .venv; into the current Python if there is no .venv)
+NEO-START.bat                      # Windows double-click / command-line start; neo\NEO-START.vbs when there is no console
+python neo/manager.py              # run directly; --engine mock uses the mock engine, --no-webview uses the browser
+NeoStrata.exe                      # the built single-file exe — double-click it inside the Strata root (see "Building the exe")
 ```
 
-浏览器界面那条路把 `mode="browser"` 记进去，第二句就换成"它没有窗口 —— 界面在浏览器里：…"，
-并给出装 pywebview 的命令。记录里那个进程已经没了（上次被任务管理器结束、断电）时说的是
-另一句："…但它已经没了 —— 这条记录已清掉"，并顺手把过期记录抹掉（`state.instance_alive()`
-用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` 问，不发消息、不碰那个进程）。
-实测 2026-10-12 在 Windows 11：`NeoStrata.exe` 起一个后，第二个实例的日志里就是上面那段话。
+pywebview uses the Edge (WebView2) backend. When the machine has no WebView2 runtime, or pywebview
+is not installed, `neo/manager.py` falls back to the browser UI — the console service is standard
+library, the features are identical, there is just no native window. On that path the process sits
+in the background with nothing on screen, so the "a second instance is already running" message has
+to say exactly who is running (see "second instance" below).
 
-## 文件
+**QuickEdit freezes the console**: when running with a console (`.bat` / `python -m neo.manager`),
+one click inside the window enters selection mode; once the console buffer is selected, the thread
+writing to stdout parks there — Neo's output goes through that thread, and the window reads as "Not
+responding". Three fixes: turn QuickEdit off in the console properties; use `neo\NEO-START.vbs` (no
+console); use `NeoStrata.exe` (the windowed build has no console at all).
 
-| 文件 | 作用 |
+### Double-click flashed and closed (fixed)
+
+Double-clicking `NEO-START.bat` made the window appear and vanish. Two measured causes:
+
+- The launcher ran `python neo\manager.py`. `neo/manager.py` opens with package-relative imports, so
+  running it as a script raises `ImportError: attempted relative import with no known parent
+  package` and the process exits immediately. The launcher now always goes through `-m neo.manager`
+  (`.bat` / `.vbs` / `.ps1` all changed), and `manager.py` itself recognises the `neo` package, so
+  both spellings start (measured: `python neo\manager.py --help` and `python -m neo.manager --help`
+  both exit 0).
+- On a non-zero exit code the `.bat` used to close the window immediately, so the reason was never
+  visible. It now keeps the window open, prints the exit code and the last 15 lines of
+  `neo\state\logs\manager.log`, and waits for a key press; the `.bat` starts with `chcp 65001` so
+  Chinese log lines no longer turn into mojibake in the console.
+
+**A second instance** (for example one left over from a previous run) shows a modal "Neo is already
+running" and exits — that box has to be dismissed, it is not a crash. When the port is held by a
+service left over from a previous run, the new instance adopts it (the status page says "adopted the
+service already running").
+
+The mutex is per **root directory** (`mutex_name_for(root)` in `neo/manager.py`): one Neo per Strata
+directory, two directories do not block each other; only a second instance on the same directory is
+blocked. To say *who* is running, the second instance reads `neo/state/instance.json` (written by
+`state.record_instance()`: pid / root / port / UI URL / window-or-browser, cleared by `atexit` on
+exit):
+
+```
+A Neo is already running: process 47308, root D:\Work\Strata.
+Its UI is at http://127.0.0.1:8083/
+To close it: end process 47308 in Task Manager. To bypass this check: add --force.
+```
+
+On the browser path the record carries `mode="browser"`, so the second line becomes "it has no
+window — the UI is in a browser: …" plus the command that installs pywebview. When the recorded
+process is already gone (killed from Task Manager, power loss), the message is the other one: "…but
+it is gone — this record has been cleared", and the stale record is removed
+(`state.instance_alive()` asks with `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` — no messages
+sent, the process is not touched). Measured 2026-10-12 on Windows 11: with `NeoStrata.exe` running,
+the second instance's log contains exactly the text above.
+
+## Files
+
+| File | What it does |
 | --- | --- |
-| `neo/manager.py` | 桌面壳：单实例互斥体（按根目录）、窗口几何持久化、pywebview 容器（**不挂 js_api**）、浏览器退回、`--force` |
-| `neo/supervisor.py` | 进程监督：启动、探活、退出诊断、事件时间线（**不自动重启**，2026-10-13 删了退避与熔断） |
-| `neo/console_server.py` | 控制台服务（标准库 `http.server`）：页面 + JSON 接口；页面里所有动作的落点，含 `POST /neo/open` / `/neo/open-log` |
-| `neo/state.py` | 状态落点 `neo/state/`（启动设置、窗口几何、日志、`instance.json`），原子写 + `.bak`；exe 里状态落点见 `pick_state_dir()` |
-| `neo/paths.py` | 路径解析：`safe_resolve()` 不跟 Windows 重解析点（OneDrive 同步根的 `.SyncRoot`），深度封顶 64 段；`app_dir()` / `web_dir()` / `is_frozen()` 认 exe 与源码两种落点；`strata_root()` 一条规则认引擎根目录（见"根目录怎么认"）、`app_root()` / `engine_checkout()` |
-| `neo/console_io.py` | 控制台输出闸门：单行 400 字符、每秒 30 行、5 秒内同样的行折叠、控制字符清掉；只包 `isatty()` 为真的流，一次 `write()` 里 2–60 行算一整块放行（`BURST_LINES` 行/秒）；`quiet_gui_logging()` 压 pywebview/pythonnet 的内部日志；真流写不动时丢掉而不排队；`NullStream` 接窗口版里 `sys.stdout` 是 `None` 的情况 |
-| `neo/ui_watchdog.py` | 窗口线程看门狗：`evaluate_js` 探窗口线程，3 秒没回音就把各线程当前所在帧写进日志 |
-| `neo/jobobj.py` | Windows Job Object：Neo 结束时子进程（含引擎、视觉编码器）跟着结束 |
-| `neo/engines/` | 引擎适配层：`strata.py`（发现配置、拼命令）、`base.py`、`mock.py`（测试） |
-| `neo/netprobe.py` | 下载源探测：TCP 443 连 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` / `github.com` 并计时，结果缓存；前三样给"模型从哪个源下"的建议，`github.com` 只给引擎源码树用（不改上游的源选择） |
-| `neo/tokens.py` | key 与绑法：`sk-neo-<32 hex>`、掩码、按 base 缓存的 key、本机局域网地址、防火墙提示命令（只给不执行） |
-| `neo/wizard.py` | 安装向导：四步现状 + 拼 `setup.py --yes --no-start [--family X --model Y]` 命令 + 后台跑并写 `logs/wizard.log`，`run_state()` 说现在有没有在跑 |
-| `neo/engine_setup.py` | 引擎源码树向导：按 `engine_ref.json` 的 pin `git clone --depth 1` 或解压摘要对上的 zip 到 `strata/`，`plan()` 回七个状态之一，之后交给 `setup.py`；命令行 `python -m neo.engine_setup --check \| --ensure [--zip 文件] [--json]` |
-| `neo/engine_ref.json` | 钉住的那一份引擎：`url` / `tag` / `sha` / `zip_sha256`（+ 字节数与一句话说明）。bump 就是改这一份 |
-| `neo/deploy.py` | 换版脚本：把开发树的 `neo/` + `NEO-START.bat` + `NeoStrata.exe` 写进部署树，先过引擎 / 路径 / 进程三道闸门，写完核对 SHA-256 并就地跑 `webcheck` 与快套件；默认 dry-run，`--apply` 才写 |
-| `neo/models.py` | 安装清单：ast 读 `setup.py` 的 `MODELS` / `FAMILIES` 两张表（不 import、不跑它）+ 这台机器（内存 / 显卡 / 盘剩）+ 按内存的推荐 + 装没装（fits / tight / no）；命令行 `python -m neo.models [--json]`（根目录不给就走 `neo/paths.py::resolve_root()`） |
-| `neo/connectors.py` | 四个 agent（Claude Code / Codex CLI / OpenCode / OpenClaw）的配方与合并写入：先备份 `.neo-bak`，只动 Neo 自己那一段，解析不了就不动 |
-| `neo/connect.py` | 接线命令行：`python -m neo.connect [agent] [--persist] [--lan] [--json]` |
-| `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 / 接入 |
-| `neo/webcheck.py` | 页面脚本体检：按 `index.html` 的加载顺序把页面当一个程序查（跨文件顶层重名、花括号配平、接线在不在顶层），`build_exe` 出包前的闸门；命令行 `python -m neo.webcheck` |
-| `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 523 个测试（见下）：`_bootstrap.py` 给出 `REPO` 与 `ENGINE`（引擎树 = `paths.strata_root()` 算的那个）与 `server_ready`（引擎的真服务起不动时，用真 `serve/server.py` 的测试跳过并说清缺哪个包），`test_paths.py` 守根目录规则，`test_engine_setup.py` 守 pin / clone / zip 摘要 / dirty / 外置引擎目录，`test_deploy.py` 守换版闸门，`test_harness.py` 守"30 秒时间标准"与那条跳过规则 |
-| `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
+| `neo/manager.py` | Desktop shell: single-instance mutex (per root), window geometry persistence, pywebview container (**no `js_api`**), browser fallback, `--force` |
+| `neo/supervisor.py` | Process supervision: start, liveness, exit diagnosis, event timeline (**no auto-restart**; backoff and circuit breaker removed 2026-10-13) |
+| `neo/console_server.py` | Console service (standard library `http.server`): the pages + JSON API; the landing point of every action in the UI, including `POST /neo/open` / `/neo/open-log` |
+| `neo/state.py` | State landing point `neo/state/` (launch settings, window geometry, logs, `instance.json`), atomic write + `.bak`; inside the exe the landing point is chosen by `pick_state_dir()` |
+| `neo/paths.py` | Path resolution: `safe_resolve()` does not follow Windows reparse points (the `.SyncRoot` of a OneDrive sync root), depth capped at 64 segments; `app_dir()` / `web_dir()` / `is_frozen()` handle both the exe and the source layout; `strata_root()` resolves the engine root with one rule (see "How the root is resolved"), `app_root()` / `engine_checkout()` |
+| `neo/console_io.py` | Console output gate: 400 characters per line, 30 lines per second, identical lines folded inside 5 s, control characters stripped; only wraps streams whose `isatty()` is true; a 2–60-line `write()` passes as one whole block (`BURST_LINES` lines/s); `quiet_gui_logging()` silences pywebview/pythonnet internal logging; drops lines when the real stream cannot be written instead of queueing them; `NullStream` covers the windowed build where `sys.stdout` is `None` |
+| `neo/ui_watchdog.py` | UI-thread watchdog: probes the window thread with `evaluate_js`; when it does not answer within 3 s, writes the frame each Python thread is currently sitting in to the log |
+| `neo/jobobj.py` | Windows Job Object: when Neo ends, its children (the engine, the vision encoder) end with it |
+| `neo/engines/` | Engine adapter layer: `strata.py` (discovers configs, builds the command line), `base.py`, `mock.py` (tests) |
+| `neo/netprobe.py` | Download-source probe: connects to `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` / `github.com` over TCP 443 and times them, results cached; the first three feed the "which source to download from" suggestion, `github.com` is only for the engine source tree (it does not change upstream's source selection) |
+| `neo/tokens.py` | Keys and binding: `sk-neo-<32 hex>`, masking, keys cached per base, this machine's LAN addresses, the firewall command (suggested, never executed) |
+| `neo/wizard.py` | Install wizard: four status steps + builds the `setup.py --yes --no-start [--family X --model Y]` command + runs it in the background writing `logs/wizard.log`; `run_state()` says whether a run is in progress |
+| `neo/engine_setup.py` | Engine source-tree wizard: per the pin in `engine_ref.json`, `git clone --depth 1` into `strata/` or unpacks a zip whose digest matched; `plan()` returns one of seven states, then hands off to `setup.py`; CLI `python -m neo.engine_setup --check \| --ensure [--zip file] [--json]` |
+| `neo/engine_ref.json` | The pinned engine: `url` / `tag` / `sha` / `zip_sha256` (+ byte count and a one-line note). A bump edits this one file |
+| `neo/deploy.py` | Version-swap script: writes the dev tree's `neo/` + `NEO-START.bat` + `NeoStrata.exe` into the deploy tree after passing three gates (engine / paths / process), then verifies SHA-256 per file and runs `webcheck` and the quick suite in place; dry-run by default, `--apply` writes |
+| `neo/models.py` | Install catalogue: reads `setup.py`'s `MODELS` / `FAMILIES` tables with `ast` (never imports or runs it) + this machine (RAM / GPU / free disk) + a by-RAM recommendation + installed state (fits / tight / no); CLI `python -m neo.models [--json]` (root defaults to `neo/paths.py::resolve_root()`) |
+| `neo/connectors.py` | Recipes for the four agents (Claude Code / Codex CLI / OpenCode / OpenClaw) and merged writes: back up to `.neo-bak` first, touch only Neo's own section, leave the file alone when it cannot be parsed |
+| `neo/connect.py` | Wiring CLI: `python -m neo.connect [agent] [--persist] [--lan] [--json]` |
+| `neo/web/` | Console pages: status / models / chat / monitor / logs / settings / connect |
+| `neo/webcheck.py` | Page-script health check: parses the pages as one program in `index.html` load order (cross-file top-level name collisions, brace balance, wiring at top level); the gate before `build_exe` ships; CLI `python -m neo.webcheck` |
+| `neo/NeoStrata.spec`, `neo/build_exe.py`, `neo/neo_entry.py` | Build into a single `NeoStrata.exe` (see "Building the exe") |
+| `neo/tests/` | 523 tests (see "Tests"): `_bootstrap.py` provides `REPO` and `ENGINE` (the engine tree is what `paths.strata_root()` resolves) and `server_ready` (when the engine's real service cannot import, the tests that use the real `serve/server.py` skip and name the missing package); `test_paths.py` guards the root rule, `test_engine_setup.py` guards pin / clone / zip digest / dirty / external engine dir, `test_deploy.py` guards the deploy gates, `test_harness.py` guards the 30-second time standard and that skip rule |
+| `neo/requirements-neo.txt`, `neo/install_neo.py` | Neo's own dependencies, never added to upstream `requirements.txt` |
 
-Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
+Neo's runtime state lives entirely in `neo/state/`, which is gitignored.
 
-## 监督器的行为
-
-```
-idle ──启动──> starting ──/health 应答──> running
-                  │                        │
-                  │ 加载超时                │ 子进程非预期退出
-                  ▼                        ▼
-             idle（记下退出码与一句诊断，等用户点「启动」）
-                  │
-                  └── 端口上出现活着的服务 ──> external（接手）
-```
-
-- **Neo 任何时候都不自动拉起**：用户点「停止」后不会（`intent=stop` 是硬开关）；服务崩了、
-  加载超时后也不会。**2026-10-13 删掉了退避重启与熔断**（原来是"退避 5 / 15 / 45 秒、
-  10 分钟内 3 次后熔断 halted、页面上给一个「重试」按钮"）。删它的理由是收益太小、麻烦太大：
-  模型重载本来归上游（下面那条「引擎重载不归 Neo」），Neo 这一层重启是重复劳动；麻烦都量过 ——
-  这条链路是全套件最慢的一格（`TestCrashRestart` 14.7 秒，全跑 18.3 秒里的八成），引擎依赖缺失时
-  它把整张退避表跑完（全跑从 18.3 秒变 5 分钟），熔断还让状态页在端口上有活着的服务时写"未启动"。
-  现在崩了只做三件事：记下退出码（状态页「上次退出」那一行）、给一句诊断、在事件里写
-  "已停止，点「启动」重新起"。顺带修了一个旧 bug：监督线程停在盯端口那一层（`_watch_external`）
-  出不去，熔断后点「重试」等于没点；现在那一层认得"用户又点了一次启动"（`_start_seq`），
-  崩了之后点启动真的会再起（`TestCrashStops.test_start_after_a_crash_starts_again`）。
-- **探活分三层**：端口在听（TCP）→ `/health` 应答（服务活着）→ `loaded`（模型已加载）。
-  模型加载要几分钟，这段时间 Neo 显示"启动中"，不算失败。
-- **探活的节奏：进程死活按 `poll_s` 看，`/health` 按 `probe_s` 问**（2026-10-13 改）。之前是
-  每一轮都探一次，而一次探活最坏是 TCP 1.2 秒 + `/health` 4 秒 + `/metrics` 4 秒，`proc.poll()`
-  只在两轮之间看一眼 —— 子进程崩了要等这一轮探活跑完才看得见。实测 2026-10-13 本机
-  （`neo/tests/probes/probe_cost.py`，杀掉服务后逐层计时）：监听被杀掉后 Windows 把那个端口黑洞化
-  （SYN 没人回，不是 RST），一次探活 1.21 + 2.02 + 2.02 = 5.25 秒，用户看到的就是"进程已经崩了，
-  状态页还写着运行中，自动重启晚 5 秒才开始"（那时还有自动重启；现在崩了不重启，这条计时量的
-  是"多久看得见它死了"）。TCP 那一层的超时从 1.2 秒收到 0.25 秒（回环上连
-  一个活着的监听是 0.00 秒，同一脚本实测），发现退出从 2.06 秒到 **0.02 秒**、启动到就绪从
-  1.82 秒到 **0.61 秒**（`neo/tests/probes/supervisor_events.py`：读监督器自己记的事件时间戳）。
-- **引擎重载不归 Neo**：`serve/server.py` 自己会重启引擎（`StrataEngine.restart`，issue #344），
-  Neo 只在事件里显示一条提示，不干预。
-- **端口上已有活着的服务就接手**：用户先用 `START-HERE.bat` 起来了，Neo 认下它，不重复启动。
-  Neo 自己起不来（配置缺东西）时也一样：盯端口那一层探到活着的服务就交回主循环去接手
-  （`_watch_external` 在 `intent=run` 时回 True）。之前只有"运行中（外部启动）"这个显示，没有交回
-  这一步，Neo 就永远停在"外部启动"、点启动不会接手 —— 2026-10-13 把 TCP 超时从 1.2 秒收到
-  0.25 秒后 `test_adopt_shows_config_log` 才暴露这件事：那 1.2 秒正好是给外部服务的启动窗口，
-  窗口没了这条路径就断了。
-- **认服务是自家的还是外人的，走进程树，不能只比 pid**：启动服务的那个 python 自己会再拉
-  一个进程去跑脚本，所以端口上的监听者通常是 Neo 孩子的孩子。实测 2026-10-12 在
-  `D:\Work\Strata`：NeoStrata 40856 → NeoStrata 46380 → `.venv\Scripts\python.exe`（跳板）
-  46984 → 绑上 8080 的 45868，后两条命令行一模一样；单独启动那个 venv 的 python.exe，
-  启动它回 42016、真正跑脚本的是它的孩子 42388。`jobobj.is_descendant` 就是干这件事的：
-  按"监听者不是我孩子就是外人的服务"写，会把 Neo 自己正在应答的服务判成外人的并杀掉它。
-- **退出给一句能照着做的提示**：从日志尾部认 `out of memory` / `failed to map` /
-  `page file` / `already in use` / `driver is too old` 等，措辞对齐 `docs/TROUBLESHOOTING.md`；
-  认不出就给一句"服务停了：看日志找原因，或点「启动」重新起"。
-
-## 控制台接口
-
-默认绑 `127.0.0.1`，端口 = Strata 端口 + 3（8080 → 8083），被占用时依次试 +4..+8。
-带 `Origin` 的请求必须指向本机，`Host` 不是本机地址的一律 403。
+## Supervisor behaviour
 
 ```
-GET  /                      控制台页面（静态资源一律 no-store）
-GET  /neo/status            状态快照：state / pid / listening / healthy / loaded / metrics / events
-GET  /neo/models            可启动的模型（根目录的 strata-*.json，最近用过的排最前）
-GET  /neo/log?tail=N        服务日志尾部
-GET  /neo/config            POST /neo/config     启动设置（存 neo/state/launcher.json，不回显 key）
+idle ──start──> starting ──/health answers──> running
+  │                        │
+  │  load timeout          │  child exits unexpectedly
+  ▼                        ▼
+idle (records the exit code and one line of diagnosis, waits for the user to press "Start")
+  │
+  └── a live service appears on the port ──> external (adopt)
+```
+
+- **Neo never auto-starts anything**: not after the user presses "Stop" (`intent=stop` is a hard
+  switch), and not after a crash or a load timeout. **The backoff restart and the circuit breaker
+  were removed on 2026-10-13** (they were "backoff 5 / 15 / 45 s; after 3 crashes inside 10 minutes
+  the breaker trips to `halted`; the page shows a single Retry button"). The reason: the benefit was
+  tiny and the cost was measured. Model reload belongs to upstream (see "engine reload is not Neo's
+  job" below), so a restart at Neo's layer is duplicated work. Every cost was measured — that path
+  was the slowest cell in the whole suite (`TestCrashRestart` 14.7 s, about 80% of the 18.3 s full
+  run); when an engine dependency was missing it ran the entire backoff table (the full run went from
+  18.3 s to 5 minutes); and the breaker made the status page write "Not started" while a live service
+  was on the port. A crash now does three things: record the exit code (the "Last exit" row on the
+  status page), give one line of diagnosis, and write "stopped, press Start to run it again" into the
+  events. That also fixed an old bug: the supervision thread parked in the port-watching layer
+  (`_watch_external`) and could not leave it, so pressing "Retry" after a breaker did nothing; that
+  layer now recognises "the user pressed Start again" (`_start_seq`), and after a crash pressing Start
+  really starts a new process (`TestCrashStops.test_start_after_a_crash_starts_again`).
+- **Liveness has three layers**: the port is listening (TCP) → `/health` answers (the service is
+  alive) → `loaded` (the model is loaded). Loading a model takes minutes; during that time Neo shows
+  "starting", which is not treated as a failure.
+- **Probe cadence: process death is checked at `poll_s`, `/health` is asked at `probe_s`** (changed
+  2026-10-13). Previously every round probed, and one probe cost up to TCP 1.2 s + `/health` 4 s +
+  `/metrics` 4 s, while `proc.poll()` was only looked at between rounds — so a crashed child was only
+  visible after the current probe round finished. Measured 2026-10-13 on this machine
+  (`neo/tests/probes/probe_cost.py`, timing each layer after killing the service): once the listener
+  is killed Windows black-holes the port (SYN is unanswered, not RST), so one probe cost
+  1.21 + 2.02 + 2.02 = 5.25 s; what the user saw was "the process is already dead, the status page
+  still says running, and the auto-restart started 5 seconds late" (auto-restart existed then; it is
+  gone now, and this measurement is about how long death takes to become visible). The TCP timeout was
+  cut from 1.2 s to 0.25 s (connecting to a live loopback listener takes 0.00 s, same script), which
+  moved death detection from 2.06 s to **0.02 s** and start-to-ready from 1.82 s to **0.61 s**
+  (`neo/tests/probes/supervisor_events.py`: it reads the supervisor's own event timestamps).
+- **Engine reload is not Neo's job**: `serve/server.py` restarts the engine itself
+  (`StrataEngine.restart`, issue #344); Neo only shows a line in the events and does not intervene.
+- **A live service already on the port is adopted**: if the user started Strata with `START-HERE.bat`
+  first, Neo recognises it and does not start a duplicate. The same applies when Neo cannot start it
+  (missing configuration): the port-watching layer hands control back to the main loop to adopt the
+  live service (`_watch_external` returns True while `intent=run`). Previously there was only the
+  "running (external)" display without the hand-back, so Neo stayed stuck in "external" and pressing
+  Start never adopted. After the 2026-10-13 TCP cut from 1.2 s to 0.25 s, `test_adopt_shows_config_log`
+  exposed it: those 1.2 s were exactly the window given to an external service to boot, and once the
+  window was gone the path was broken.
+- **"Ours" vs "someone else's" service is decided through the process tree, not by comparing pids**:
+  the python that starts the service spawns another process to run the script, so the listener on the
+  port is usually Neo's grandchild. Measured 2026-10-12 in `D:\Work\Strata`: NeoStrata 40856 →
+  NeoStrata 46380 → `.venv\Scripts\python.exe` (trampoline) 46984 → 45868 bound to 8080, the last two
+  with identical command lines; starting that venv python.exe alone, the start call returns 42016 and
+  the process actually running the script is its child 42388. `jobobj.is_descendant` exists for
+  exactly this: written as "if the listener is not my child, it is somebody else's service", it would
+  classify the very service Neo is talking to as foreign and kill it.
+- **An exit gets an actionable line**: the tail of the log is scanned for `out of memory` /
+  `failed to map` / `page file` / `already in use` / `driver is too old` and friends, with wording
+  aligned to `docs/TROUBLESHOOTING.md`; when nothing matches, the line is "the service stopped: read
+  the log for the cause, or press Start to run it again".
+
+## Console API
+
+Binds `127.0.0.1` by default; port = Strata port + 3 (8080 → 8083), and when it is taken it tries
++4..+8 in order. A request carrying `Origin` must point at this machine; a `Host` that is not a
+local address is always 403.
+
+```
+GET  /                      the console page (static assets are always no-store)
+GET  /neo/status            status snapshot: state / pid / listening / healthy / loaded / metrics / events
+GET  /neo/models            startable models (the root's strata-*.json, most recently used first)
+GET  /neo/log?tail=N        tail of the service log
+GET  /neo/config            POST /neo/config     launch settings (stored in neo/state/launcher.json, the key is never echoed back)
 POST /neo/start /stop /retry /model
-POST /neo/open               {"page":"chat|monitor"} 在浏览器里打开那一页（由壳执行）
-POST /neo/open-log           用系统默认方式打开服务日志
-GET  /neo/net?fresh=1        下载源连通性（TCP 443）与下载源建议；结果缓存在 neo/state/netprobe.json
-GET  /neo/lan                本机局域网地址、可访问的界面地址、防火墙提示、当前 token 状态
-POST /neo/token              {"action":"new|reveal|unset|forget"}：new 生成一把 key 写
-                             neo/state/launcher.json；reveal 把当前这把原样交回页面（给"复制
-                             token"用，只读，且只认对端地址是本机的请求，别处只给掩码）；
-                             unset 清掉服务上的 key（缓存留着）；forget 从缓存里删掉这把。
-                             new 与 reveal 的应答带完整 key，其余只带掩码
-GET  /neo/connect            四个 agent 的接线配方（读配置，不写）
-POST /neo/connect            {"agent":"claude|codex|opencode|openclaw"} 写配置文件（先备份）
-GET  /neo/wizard             安装向导：现状四步 + 将要执行的 setup.py 命令 + 日志尾部
-POST /neo/wizard             后台执行 setup.py --yes --no-start（带 family/model 时加 --family X --model Y）
-GET  /neo/catalog            可安装清单：ast 读 setup.py 的 MODELS / FAMILIES 两张表 + 这台机器
-                             （内存 / 显卡 / 盘剩）+ 按内存的推荐 + 装没装 + 正在装的那一个 +
-                             下载源那一排（探测结论、四个选项的耗时与命令前后缀、记住的那一个）
-GET  /neo/catalog?fresh=1    同上，并在后台线程里重新探测一次（页面读缓存，不被慢站点拖住）
-POST /neo/install            {"family":"qwen","model":"IQ3_S","source":"modelscope"} 后台跑
-                             setup.py --yes --no-start --family qwen --model IQ3_S，输出进
-                             neo/state/logs/wizard.log；菜单里没有这一项、或已经有一个在跑，
-                             都挡回来并说明原因
-POST /neo/source             {"source":"probe|huggingface|modelscope|mirror"} 记住下载源，
-                             存 neo/state/source.json，回同一份清单；认不得的源回一条说明，
-                             什么都不写、不起子进程
-GET  /neo/engine             引擎源码树的现状（接入页的「引擎源码树」卡片读这一条）：pin 的
-                             tag / sha / archive 地址、这台机器有没有 git、`github.com` 通不通
-                             （吃探测缓存，不联网）、`strata/` 在哪、HEAD 与 pin 对不对、
-                             `plan()` 的七个状态与下一步的动作、将要执行的那条 clone 命令、
-                             三步的现状、`engine.log` 的尾部、有没有一个在跑
-POST /neo/engine             {"action":"install","zip":"D:/x.zip"}：按 pin 取源码，后台线程跑
-                             （`wait=False`，一次 clone 要几十分钟，不能把请求线程堵住），
-                             取完交给 `setup.py`（`setup=True`，Neo 不自己装 venv / 依赖 / 引擎 /
-                             模型），host 与 key 从监督器传下去；输出进 neo/state/logs/engine.log；
-                             认不得的 action 回一条说明，什么都不跑；脏树 / 普通目录在动手前拒绝
-GET  /i18n.js                中英切换与明暗主题的脚本（与 /app.js 一样 no-store）
-GET  /neo/upstream?what=…    上游面板的三块（models / status / metrics），由 Neo 代读：浏览器
-                             在 8083 的页面上直连 8080 会被 CORS 挡住，API key 也不出 Neo
-GET  /neo/remote             远程接入那一行命令：地址、模型、上下文算好了给，key 只给占位符，
-                             复制那一下才由 /neo/token 的 reveal 填上
-GET  /neo/model/settings     一个模型的运行参数（上下文 / KV / 图片 / 显存保留）+ 每栏的可选项
-     ?model=ID              + 显存估算 + 有没有覆盖配置 + 要不要重启；没点名就用第一个配置，
-                             点了名找不到就把清单列出来，不悄悄换成别的模型
-POST /neo/model/settings     写覆盖配置 neo/state/configs/strata-<id>.neo.json（上游那份一个
-                             字节都不动）；越界与认不得的键挡回来并说明；{"action":"reset"}
-                             删掉覆盖配置，下一次启动回到 setup.py 写的那份
+POST /neo/open              {"page":"chat|monitor"} opens that page in a browser (executed by the shell)
+POST /neo/open-log          opens the service log with the system default handler
+GET  /neo/net?fresh=1       download-source connectivity (TCP 443) and the source suggestion; cached in neo/state/netprobe.json
+GET  /neo/lan               this machine's LAN addresses, the UI URLs reachable from them, the firewall hint, current token state
+POST /neo/token             {"action":"new|reveal|unset|forget"}: new mints a key and writes neo/state/launcher.json;
+                            reveal hands the current key back verbatim to the page (for "copy token"; read-only, and only
+                            for requests whose peer address is this machine — everywhere else only the mask);
+                            unset clears the key on the service (the cache stays); forget deletes it from the cache.
+                            new and reveal answer with the full key, every other action only with the mask
+GET  /neo/connect           the wiring recipes for the four agents (reads configs, writes nothing)
+POST /neo/connect           {"agent":"claude|codex|opencode|openclaw"} writes the agent config file (backup first)
+GET  /neo/wizard            install wizard: four status steps + the setup.py command about to run + log tail
+POST /neo/wizard            runs setup.py --yes --no-start in the background (with --family X --model Y when one is named)
+GET  /neo/catalog           installable catalogue: setup.py's MODELS / FAMILIES tables read with ast + this machine
+                            (RAM / GPU / free disk) + the by-RAM recommendation + installed state + the install in
+                            progress + the download-source row (probe verdict, the four options' timings and command
+                            prefixes/suffixes, the one that was remembered)
+GET  /neo/catalog?fresh=1   same, and re-probes on a background thread (the page reads the cache, never blocked by a slow site)
+POST /neo/install           {"family":"qwen","model":"IQ3_S","source":"modelscope"} runs
+                            setup.py --yes --no-start --family qwen --model IQ3_S in the background; output goes to
+                            neo/state/logs/wizard.log; an item that is not in the menu, or an install already running,
+                            is refused with the reason
+POST /neo/source            {"source":"probe|huggingface|modelscope|mirror"} remembers the download source in
+                            neo/state/source.json and returns the same catalogue; an unknown source returns one
+                            explanatory line, writes nothing, starts no subprocess
+GET  /neo/engine            the engine source tree's state (the "engine source tree" card on the connect page):
+                            the pin's tag / sha / archive URL, whether this machine has git, whether github.com is
+                            reachable (reads the probe cache, does not go online), where strata/ is, whether HEAD
+                            matches the pin, plan()'s seven states and the next action, the clone command about to
+                            run, the three-step status, the tail of engine.log, whether a run is in progress
+POST /neo/engine            {"action":"install","zip":"D:/x.zip"}: fetches the source per the pin on a background
+                            thread (wait=False — one clone takes tens of minutes and must not block the request
+                            thread), then hands off to setup.py (setup=True; Neo does not install the venv /
+                            dependencies / engine / models itself); host and key are passed down from the supervisor;
+                            output goes to neo/state/logs/engine.log; an unknown action returns one explanatory line
+                            and runs nothing; a dirty tree or a plain directory is refused before anything is touched
+GET  /i18n.js               the language/theme script (no-store, same as /app.js)
+GET  /neo/upstream?what=…   the upstream panel's three blocks (models / status / metrics), read by Neo on the page's
+                            behalf: a browser on 8083 hitting 8080 directly is blocked by CORS, and the API key never
+                            leaves Neo
+GET  /neo/remote            the remote-access command line: address, model and context computed and filled in, the
+                            key is only a placeholder — the copy action fills it via /neo/token reveal
+GET  /neo/model/settings    one model's runtime parameters (context / KV / vision / VRAM reserve) + the options per
+     ?model=ID             field + a VRAM estimate + whether an override config exists + whether a restart is
+                            needed; with no model named it uses the first config; a named model that is not found
+                            lists the catalogue instead of silently switching to another model
+POST /neo/model/settings    writes the override config neo/state/configs/strata-<id>.neo.json (not one byte of the
+                            upstream file changes); out-of-range and unknown keys are refused with an explanation;
+                            {"action":"reset"} deletes the override, so the next start goes back to what setup.py wrote
 ```
 
-## 接入页（M2/M3）：装模型、开局域网、接四个 agent
+## Connect page (M2/M3): install models, open the LAN, wire four agents
 
-页面在窗口顶栏的「接入」，命令行是 `python -m neo.wizard` 和 `python -m neo.connect`。
-**默认路径不变**：不写任何用户文件、服务绑 `127.0.0.1`、不带 key；这一页的每一项都要用户点名才动。
+The page is the "Connect" tab in the window's top bar; the command lines are `python -m neo.wizard`
+and `python -m neo.connect`. **The default path does not change**: no user file is written, the
+service binds `127.0.0.1`, no key; every item on this page only moves when the user names it.
 
-### 模型页的「下载安装模型」（`neo/models.py`）
+### "Download and install a model" on the model page (`neo/models.py`)
 
-清单不在 Neo 里抄一份：`neo/models.py` 用 `ast` 读 `setup.py` 的 `MODELS` / `FAMILIES` 两张表
-（不 import、不跑它，文件改了缓存自动失效），装没装是扫根目录的 `strata-*.json`（配置在、文件不在
-的记「装好一半」），机器是问 `GlobalMemoryStatusEx`（与 `setup.py` 的 `ram_gb()` 同一算法）、
-`nvidia-smi`（60 秒内不重复问，AMD 卡问不到就说问不到）、`shutil.disk_usage` 看盘剩多少。
+The catalogue is not copied into Neo: `neo/models.py` reads `setup.py`'s `MODELS` / `FAMILIES` tables
+with `ast` (it never imports or runs them; the cache invalidates when the file changes), installed
+state comes from scanning the root's `strata-*.json` (config present, model file missing is recorded
+as "half installed"), and the machine comes from `GlobalMemoryStatusEx` (the same algorithm as
+`setup.py`'s `ram_gb()`), `nvidia-smi` (not asked twice within 60 s; if an AMD card cannot be
+queried, it says so) and `shutil.disk_usage` for free disk.
 
-推荐按内存分档，档位是 `docs/AI_SETUP.md` 第 3 步与 `docs/MODELS.md` 的 Pick by RAM：
-32 GB → Coder IQ1_M，48 与 64 GB → IQ2_XS，96 GB 以上 → IQ3_S。装不装得下按 `setup.py --check`
-的口径：需要内存不超过本机内存 = 装得下，超出 8 GB 以内 = 勉强，再多 = 装不下；unsloth 那两档
-是流式加载，按它自己的下限（48 GB）算。
+The recommendation is by RAM, using the tiers from `docs/AI_SETUP.md` step 3 and `docs/MODELS.md`'s
+"Pick by RAM": 32 GB → Coder IQ1_M, 48 and 64 GB → IQ2_XS, 96 GB and above → IQ3_S. Fits/tight/no
+follows `setup.py --check`'s rule: required memory at or below this machine's RAM = fits, up to 8 GB
+over = tight, more than that = no; the two unsloth tiers are streaming loads and are judged against
+their own floor (48 GB).
 
-点「安装」= `POST /neo/install` = 后台跑 `setup.py --yes --no-start --family X --model Y`，
-输出进 `neo/state/logs/wizard.log`，页面在模型页时每 5 秒刷一次清单与日志尾部。Neo 不自己下载：
-下载、校验、写 `strata-*.json` 全是 `setup.py` 的事；菜单里没有这一项、或已经有一个安装在跑，
-接口都挡回来并说明原因，不起子进程。命令行同一条路：`python -m neo.models`（根目录不给就走
-`neo/paths.py::resolve_root()`；`--json` 出机器可读的那份）看清单，
-`python -m neo.wizard --family coder --model IQ1_M` 装。
+Pressing "Install" = `POST /neo/install` = running
+`setup.py --yes --no-start --family X --model Y` in the background, output into
+`neo/state/logs/wizard.log`; while the model page is open the page refreshes the catalogue and the
+log tail every 5 s. Neo never downloads anything itself: downloading, verifying and writing
+`strata-*.json` are all `setup.py`'s job; an item that is not in the menu, or an install already
+running, is refused by the endpoint with the reason and no subprocess is started. The command line
+takes the same road: `python -m neo.models` (root defaults to `neo/paths.py::resolve_root()`;
+`--json` for the machine-readable form) shows the catalogue,
+`python -m neo.wizard --family coder --model IQ1_M` installs.
 
-清单下面那一排是**下载源**：`自动（按探测）` / `Hugging Face 官方` / `ModelScope 国内` /
-`hf-mirror 镜像`，选了就 `POST /neo/source` 记住（`neo/state/source.json`），命令预览立刻跟着变。
-四个选项全走上游本来就有的口子，Neo 不改 `setup.py` 一行：官方与 ModelScope 是 `--source` 的值，
-镜像是子进程环境里的 `HF_ENDPOINT=https://hf-mirror.com`（`setup.py` 自己读它，`--source` 里没有
-镜像这一项，所以镜像不带 `--source`）。「重新探测」按钮 = `GET /neo/catalog?fresh=1`，在后台线程里
-测，页面读缓存。实测 2026-10-13 这台 PC：`自动` 建议 ModelScope 时命令是
-`python setup.py --yes --no-start --source modelscope`，选镜像时是
-`HF_ENDPOINT=https://hf-mirror.com python setup.py --yes --no-start`，两行都写进 `wizard.log` 头部。
+The row under the catalogue is the **download source**: `auto (by probe)` / `Hugging Face official` /
+`ModelScope (China)` / `hf-mirror`, and choosing one is remembered by `POST /neo/source`
+(`neo/state/source.json`) while the command preview changes immediately. All four options go through
+openings upstream already has; Neo does not change a line of `setup.py`: official and ModelScope are
+values of `--source`, the mirror is `HF_ENDPOINT=https://hf-mirror.com` in the subprocess environment
+(`setup.py` reads it itself; `--source` has no mirror entry, so the mirror comes without `--source`).
+The "re-probe" button = `GET /neo/catalog?fresh=1`, measured on a background thread, the page reads
+the cache. Measured 2026-10-13 on this PC: when `auto` suggests ModelScope the command is
+`python setup.py --yes --no-start --source modelscope`; when the mirror is chosen it is
+`HF_ENDPOINT=https://hf-mirror.com python setup.py --yes --no-start`; both lines are written into the
+head of `wizard.log`.
 
-实测 2026-10-13 这台 PC（Windows 11，Python 3.13，94 GB 内存，RTX 5090 D v2 24 GB 显存，
-D 盘剩 487 GB）：清单 10 项，推荐 `--family qwen --model IQ3_S`（83.6 GB 下载，需要约 62 GB 内存），
-已装的 Swift 1.5 IQ3_XXS 在清单里标「已装」、按钮是「已装好」。
+Measured 2026-10-13 on this PC (Windows 11, Python 3.13, 94 GB RAM, RTX 5090 D v2 with 24 GB VRAM,
+487 GB free on D:): 10 catalogue items, recommendation `--family qwen --model IQ3_S` (83.6 GB
+download, needs about 62 GB RAM); the already-installed Swift 1.5 IQ3_XXS is marked "installed" in
+the catalogue and its button reads "installed".
 
-### 下载源探测（`neo/netprobe.py`）
+### Download-source probe (`neo/netprobe.py`)
 
-对 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` 做 TCP 443 连接计时，结果缓存进
-`neo/state/netprobe.json`（`GET /neo/net?fresh=1` 重测）。实测 2026-10-12 这台 PC（Windows 11，
-家庭网络）：`huggingface.co` 196 ms、`hf-mirror.com` 4052 ms、`www.modelscope.cn` 36 ms，三个都连得上，
-建议保持默认源，`setup.py` 命令里不加 `--source`。
+TCP 443 connect timings against `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn`, results
+cached in `neo/state/netprobe.json` (`GET /neo/net?fresh=1` re-measures). Measured 2026-10-12 on this
+PC (Windows 11, home network): `huggingface.co` 196 ms, `hf-mirror.com` 4052 ms,
+`www.modelscope.cn` 36 ms, all three reachable, so the suggestion keeps the default source and the
+`setup.py` command carries no `--source`.
 
-Neo **不改上游的下载源选择**，只把用户点的那一个翻译成上游本来就认的参数：`--source modelscope` /
-`--source huggingface`，镜像走 `HF_ENDPOINT`（见上）。探测的结论只用于「自动」这一档：
-`huggingface.co` 连不上而 ModelScope 或镜像连得上时，建议那一个并说清为什么；三个都连得上就
-不加 `--source`，用 `setup.py` 的默认源。用户随时可以越过建议自己点。
+Neo **does not change upstream's source selection**; it only translates the one the user picked into
+parameters upstream already accepts: `--source modelscope` / `--source huggingface`, and the mirror via
+`HF_ENDPOINT` (see above). The probe verdict only feeds the `auto` tier: when `huggingface.co` is
+unreachable and ModelScope or the mirror is reachable, it suggests that one and says why; when all
+three are reachable it adds no `--source` and uses `setup.py`'s default source. The user can always
+override the suggestion and pick one directly.
 
-### 安装向导（`neo/wizard.py`）
+### Install wizard (`neo/wizard.py`)
 
-四步：环境（根目录与 `setup.py`）→ 模型（`strata-*.json`）→ 网络（探测结论）→ 安全（绑法与 key）。
-"开始安装"跑的是 `[HF_ENDPOINT=https://hf-mirror.com] python setup.py --yes --no-start [--source ...]
-[--host ...] [--api-key ...]`（方括号里那截环境是选镜像时才加的，见上），
-输出进 `neo/state/logs/wizard.log`，页面每 5 秒读尾部。`--no-start` 是必须的：服务归监督器起，
-不能让 `setup.py` 自己起一个占住端口。实测 2026-10-12：跑一个打印参数的桩 `setup.py`，
-子进程 4.4 秒（venv 的 python 冷启动），退出码 0，命令行与输出都落在 `wizard.log` 里。
-`--check` 只探测不安装，`--dry-run` 只打印将要执行的命令。
+Four steps: environment (root and `setup.py`) → models (`strata-*.json`) → network (probe verdict) →
+security (binding and key). "Start install" runs
+`[HF_ENDPOINT=https://hf-mirror.com] python setup.py --yes --no-start [--source ...] [--host ...]
+[--api-key ...]` (the bracketed environment is only added when the mirror is chosen, see above),
+output into `neo/state/logs/wizard.log`, and the page reads the tail every 5 s. `--no-start` is
+mandatory: the service belongs to the supervisor, `setup.py` must not start one that occupies the
+port. Measured 2026-10-12: running a stub `setup.py` that only prints its arguments, the subprocess
+took 4.4 s (cold start of the venv python), exit code 0, and both the command line and the output
+landed in `wizard.log`. `--check` only probes and installs nothing, `--dry-run` only prints the
+command that would run.
 
-### 局域网与 token（`neo/tokens.py`）
+### LAN and token (`neo/tokens.py`)
 
-- key 形状 `sk-neo-<32 位 hex>`（`secrets.token_hex(16)`），界面上平时只显示掩码
-  `sk-neo-xxxxxxxx…（39 字符）`。
-- **一键复制**：接入页的「复制 token」把当前生效的那把完整 key 送进剪贴板（`navigator.clipboard`，
-  缺权限时退回 `execCommand("copy")`，与「复制服务地址」「复制命令」同一条路）。完整 key 只出现在
-  token 那一行的只读输入框里；掩码一变（换了 key、清了 key）页面立刻把它清掉，复制到的是当前这把。
-  取 key 走 `POST /neo/token {"action":"reveal"}`：只读、不写任何文件，且只认**对端地址**是本机
-  （127.0.0.1/::1）的请求 —— 控制台绑 `0.0.0.0` 时，从局域网来的请求只拿得到掩码。
-- 每个 base 用过的 key 存 `neo/state/agent_keys.json`（分 saved / minted 两桶），切绑法时不用重新生成。
-- 绑 `0.0.0.0` 时列出本机局域网地址与 `http://<ip>:<port>` 界面地址，并给一条**只提示不执行**的
-  Windows 防火墙命令（`netsh advfirewall firewall add rule ... port=<端口>`）。
-  绑局域网而不带 key 会被 `wizard.py` 判成"未就绪"，`neo/manager.py` 也会打一行警告。
+- The key shape is `sk-neo-<32 hex>` (`secrets.token_hex(16)`); in the UI it is normally only shown
+  masked: `sk-neo-xxxxxxxx… (39 characters)`.
+- **One-click copy**: "copy token" on the connect page puts the currently active full key on the
+  clipboard (`navigator.clipboard`, falling back to `execCommand("copy")` when the permission is
+  missing — the same road as "copy service address" and "copy command"). The full key only ever
+  appears in the read-only input box on the token row; when the mask changes (key replaced, key
+  cleared) the page clears that box immediately, so what gets copied is the current key. Fetching it
+  goes through `POST /neo/token {"action":"reveal"}`: read-only, writes no file, and only answers
+  requests whose **peer address** is this machine (127.0.0.1/::1) — when the console is bound to
+  `0.0.0.0`, a request arriving from the LAN only gets the mask.
+- The key used for each base is stored in `neo/state/agent_keys.json` (in two buckets, saved /
+  minted), so switching the binding does not require minting a new one.
+- When bound to `0.0.0.0` it lists this machine's LAN addresses and the `http://<ip>:<port>` UI URLs,
+  and gives a Windows firewall command that is **suggested, never executed**
+  (`netsh advfirewall firewall add rule ... port=<port>`). Binding to the LAN without a key is judged
+  "not ready" by `wizard.py`, and `neo/manager.py` also prints a warning line.
 
-### token 管到哪，监控页怎么读到数据（`neo/console_server.py` 的 `/strata/`）
+### What the token covers, and how the monitor page gets its data (`/strata/` in `neo/console_server.py`)
 
-token 只管模型：所有 `POST`（`/v1/*`、`/settings`、`/config`、`/load`、`/unload`、`/slots/*`）与模型清单
-（`/models`、`/v1/models`）在任何地址都只认 key。监控的只读端点（`/metrics`、`/metrics/prometheus`、
-`/status`、`/slots`、`/props`、`/config`、`/settings`、`/mcp`、`/api/requests`、`/v1/status`）设了 key 之后
-**同样要 key** —— 上游对这些端点没有本机豁免。
+The token only governs the model: every `POST` (`/v1/*`, `/settings`, `/config`, `/load`, `/unload`,
+`/slots/*`) and the model listings (`/models`, `/v1/models`) require the key on **any** address. The
+monitoring read-only endpoints (`/metrics`, `/metrics/prometheus`, `/status`, `/slots`, `/props`,
+`/config`, `/settings`, `/mcp`, `/api/requests`, `/v1/status`) require the key **as well** once one is
+set — upstream has no loopback exemption for them.
 
-Neo 不动上游这一条：先前打在 `serve/server.py` 上的本机豁免补丁已在 2026-10-13 撤掉，部署树
-（`D:\Work\Strata`，上游仓库的一个 checkout）里的 `serve/server.py` 恢复成上游原样（391,688 字节，
-`git status` 里不再有已修改的跟踪文件）。监控页要读数据走 Neo 自己的只读通道：控制台把上游的页面与
-面板端点从自己的端口转发出去，key 由 Neo 在服务端附上，页面看不到 key。状态页给的监控地址因此是
-`http://127.0.0.1:8083/strata/#monitor`；聊天页照旧直连上游（`http://127.0.0.1:8080/`）—— 聊天要 `POST`，
-Neo 不替聊天页花用户的 token。
+Neo does not touch upstream here: the loopback exemption patch that had been applied to
+`serve/server.py` was reverted on 2026-10-13, and the deploy tree's (`D:\Work\Strata`, a checkout of
+the upstream repository) `serve/server.py` is back to upstream's original (391,688 bytes; `git status`
+no longer shows a modified tracked file). The monitor page gets its data through Neo's own read-only
+channel: the console forwards upstream's page and panel endpoints from its own port, the key is added
+by Neo server-side, and the page never sees the key. The monitor URL on the status page is therefore
+`http://127.0.0.1:8083/strata/#monitor`; the chat page still connects straight to upstream
+(`http://127.0.0.1:8080/`) — chat needs `POST`, and Neo does not spend the user's tokens on the chat
+page.
 
-通道的规矩（`neo/console_server.py` 的 `STRATA_READ_PATHS` / `STRATA_READ_PREFIXES`）：
+Channel rules (`STRATA_READ_PATHS` / `STRATA_READ_PREFIXES` in `neo/console_server.py`):
 
-| 规矩 | 具体 |
+| Rule | Detail |
 | --- | --- |
-| 只转 GET 与 HEAD | `POST /strata/*` 一律 405，写与推理转不出去 |
-| 白名单 | `""`、`/api-monitor`、`/health`、`/metrics`、`/metrics/prometheus`、`/status`、`/slots`、`/props`、`/config`、`/settings`、`/mcp`、`/api/requests`、`/models`、`/v1/models`、`/v1/status`；前缀 `/web/`、`/fonts/`、`/slots/` |
-| 推理不转 | `/v1/*` 里除 `/v1/models`、`/v1/status` 之外一律 405（`/v1/chat/completions` GET 也 405） |
-| 上游没起来 | 502，说清是上游没应答 |
-| 一次的上限 | 应答最多 8 MB、上游请求 5 秒超时 |
-| 不遮 Neo 自己的路 | `/strata` 与 `/strata/` 都归到上游根（`""`），Neo 的 `/neo/*` 路由照常 |
+| Only GET and HEAD are forwarded | `POST /strata/*` is always 405, so writes and inference cannot leave |
+| Whitelist | `""`, `/api-monitor`, `/health`, `/metrics`, `/metrics/prometheus`, `/status`, `/slots`, `/props`, `/config`, `/settings`, `/mcp`, `/api/requests`, `/models`, `/v1/models`, `/v1/status`; prefixes `/web/`, `/fonts/`, `/slots/` |
+| Inference is not forwarded | Everything under `/v1/*` except `/v1/models` and `/v1/status` is always 405 (`GET /strata/v1/chat/completions` is 405 too) |
+| Upstream not up | 502, saying clearly that upstream did not answer |
+| Per-request limits | Response at most 8 MB, upstream request timeout 5 s |
+| Does not shadow Neo's own routes | `/strata` and `/strata/` both map to the upstream root (`""`); Neo's `/neo/*` routes keep working |
 
-上游的页面用相对路径发请求，所以 `/strata/` 这个前缀天然把页面、它的 js/css、它的数据请求一起带过来。
-`/api-monitor` 与 `/api/requests` 要上游配置里 `api_monitor` 开着才发，关着时通道原样转回 404。
+Upstream's page issues its requests with relative paths, so the `/strata/` prefix naturally carries
+the page, its js/css and its data requests together. `/api-monitor` and `/api/requests` only exist
+when the upstream config has `api_monitor` on; when it is off, the channel forwards the 404 through
+unchanged.
 
-实测 2026-10-13（mock 引擎设了 key，`tools/_strata_channel_check.py`，23 条全过）：直连上游 `/metrics`
-无 key 401；经通道 200，`live`/`totals`/`hardware`/`hardware_static` 四节齐，应答里不带 key；上游页面与
-`web/app.js`、`web/tokens.css` 都 200；`POST /strata/settings` 405、`POST /strata/v1/chat/completions` 405、
-`GET /strata/v1/chat/completions` 405、`POST /strata/load` 405；上游带 key 的 `/v1/models` 200、无 key 401。
-浏览器层（`tools/_strata_page_check.py`，headless Edge，10 条全过）：同一个上游页面直连时 DOM 里写着
-"API key needed"，经通道时没有这句、监控标签是激活的、`renderMonitor` 跑到位、状态徽标点亮。
+Measured 2026-10-13 (mock engine with a key set, `tools/_strata_channel_check.py`, 23 checks all
+pass): direct upstream `/metrics` without a key 401; through the channel 200 with all four sections
+`live`/`totals`/`hardware`/`hardware_static` present and no key in the response; upstream's page and
+`web/app.js`, `web/tokens.css` all 200; `POST /strata/settings` 405,
+`POST /strata/v1/chat/completions` 405, `GET /strata/v1/chat/completions` 405, `POST /strata/load`
+405; upstream's `/v1/models` with a key 200, without a key 401. At the browser layer
+(`tools/_strata_page_check.py`, headless Edge, 10 checks all pass): the same upstream page says
+"API key needed" in the DOM when reached directly, and through the channel that line is gone, the
+monitor tab is active, `renderMonitor` runs to completion, and the status badge lights up.
 
-回归测试：`neo/tests/test_console.py` 的 `TestStrataChannel`（假上游，覆盖页面与资源、服务端附 key、
-查询串、写操作、推理、路径拒绝、上游没起来、不遮 Neo 自己的路、路径常量一致）和
-`neo/tests/test_engines.py` 的 `test_pages_monitor_goes_through_the_console`；
-`neo/tests/test_upstream_api.py` 反过来盯"Neo 不依赖上游补丁"——上游文件里不许出现豁免补丁的标记，
-而监控页与那些只读端点必须还在。
+Regression tests: `TestStrataChannel` in `neo/tests/test_console.py` (fake upstream; covers the page
+and its resources, the server-side key, query strings, write operations, inference, path rejection,
+upstream down, not shadowing Neo's own routes, path-constant consistency) and
+`test_pages_monitor_goes_through_the_console` in `neo/tests/test_engines.py`;
+`neo/tests/test_upstream_api.py` watches the inverse — "Neo does not depend on an upstream patch":
+the exemption patch markers must not appear in upstream files, and the monitor page and those
+read-only endpoints must still be there.
 
-加一个控制台端点的规矩：`Handler` 里写 `self.server.X(...)`，`ConsoleServer.start()` 就得有一行
-`httpd.X = self.X` —— httpd 才是 `self.server`，控制台的方法是一个一个挂上去的。挂漏了不会崩在页面上：
-AttributeError 被 socketserver 的 `handle_error` 吞掉，连接直接关掉，`curl` 只看到
-`Empty reply from server`，页面那边就是一直转圈（2026-10-13 的引擎卡：`/neo/engine` 两条都挂漏了）。
-`test_console.py` 现在钉两条：源码里 `self.server.X(` 用到的名字必须都在 `start()` 的挂载清单里，
-以及真走一次 HTTP 的 `GET /neo/engine`（只直接调方法测不到这件事）。
+The rule for adding a console endpoint: if `Handler` calls `self.server.X(...)`, then
+`ConsoleServer.start()` must have a matching `httpd.X = self.X` — the httpd object is what
+`self.server` is, and the console's methods are attached one by one. A missing attachment does not
+crash in the page: the AttributeError is swallowed by socketserver's `handle_error`, the connection
+is simply closed, `curl` only sees `Empty reply from server`, and the page shows a fetch that spins
+forever (the engine card on 2026-10-13: both attachments were missing). `test_console.py` now pins
+two things: every name used as `self.server.X(` in the source must be in `start()`'s attachment list,
+and a real HTTP round trip of `GET /neo/engine` (calling the method directly cannot catch this).
 
-### 四个 agent 的配方（`neo/connectors.py`）
+### Recipes for the four agents (`neo/connectors.py`)
 
-| agent | 落点 | Neo 写的那一块 |
+| Agent | Landing point | The block Neo writes |
 | --- | --- | --- |
-| Claude Code | `~/.claude/settings.json` | `env` 里的 `ANTHROPIC_BASE_URL`（**不带 `/v1`**）、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL` 与四个关掉遥测/实验特性的变量 |
-| Codex CLI | `~/.codex/config.toml` + `neo.config.toml` | `[model_providers.neo]`（`base_url` 带 `/v1`、`wire_api = "responses"`、`requires_openai_auth = false`、`stream_idle_timeout_ms = 1200000`）+ `[profiles.neo]` |
-| OpenCode | `~/.config/opencode/opencode.json` | `provider.neo` 用 `@ai-sdk/openai-compatible`，模型 id 带 `neo/` 前缀，输出上限取 `window // 4`（封顶 32000），compaction 预留 `min(max(0.3×window, 4000), 15000)` |
-| OpenClaw | `~/.openclaw/openclaw.json` | `models.providers.neo`（`api = "openai-completions"`）+ `agents.defaults.model.primary = neo/<id>`；顺带把 `memory.search.provider` 设成 `none`、`env.shellEnv.enabled` 设成 `false`，否则它会自己去找真 OpenAI key |
+| Claude Code | `~/.claude/settings.json` | In `env`: `ANTHROPIC_BASE_URL` (**without `/v1`**), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, plus four variables that switch off telemetry/experimental features |
+| Codex CLI | `~/.codex/config.toml` + `neo.config.toml` | `[model_providers.neo]` (`base_url` **with** `/v1`, `wire_api = "responses"`, `requires_openai_auth = false`, `stream_idle_timeout_ms = 1200000`) + `[profiles.neo]` |
+| OpenCode | `~/.config/opencode/opencode.json` | `provider.neo` using `@ai-sdk/openai-compatible`, model ids prefixed with `neo/`, output cap `window // 4` (capped at 32000), compaction reserve `min(max(0.3×window, 4000), 15000)` |
+| OpenClaw | `~/.openclaw/openclaw.json` | `models.providers.neo` (`api = "openai-completions"`) + `agents.defaults.model.primary = neo/<id>`; it also sets `memory.search.provider` to `none` and `env.shellEnv.enabled` to `false`, otherwise it goes looking for a real OpenAI key |
 
-写文件的规矩（`test_connectors.py` 逐条盯着）：
+Rules for writing files (each one watched by `test_connectors.py`):
 
-- **合并，不覆盖**：只动 Neo 自己的那一段，用户其余的键原样留着。
-- **写之前先备份**成 `<文件>.neo-bak`；JSON 解析不了的 TOML/JSON 一律**不动文件**，回一条警告。
-- **幂等**：重跑替换 Neo 自己那一段，不叠加重复块；`GET /neo/connect` 只读不写。
-- 目录认 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `XDG_CONFIG_HOME` / `OPENCLAW_HOME`，测试就是靠这四个
-  变量把四个 agent 的配置全落进临时目录，不碰真实用户配置。
-- Claude Code 只认 `--settings` 传进来的 env，`--settings` 不读 `~/.claude`，所以配方里同时给一份
-  PowerShell / POSIX 的 `$env:` / `export` 块。带 key 时要 unset 的 11 个变量列在配方里
-  （`ANTHROPIC_API_KEY`、`CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_UNIX_SOCKET`、Foundry/Bedrock/Vertex/
-  AWS/Google Cloud/Mantle 那六个开关及其 base_url/resource）——留着任何一个都会把请求带去真 Anthropic。
+- **Merge, never overwrite**: only Neo's own section is touched, every other user key stays as it was.
+- **Back up first** to `<file>.neo-bak`; a TOML/JSON that cannot be parsed is **left untouched** and a
+  warning is returned.
+- **Idempotent**: re-running replaces Neo's own section, it does not stack duplicate blocks;
+  `GET /neo/connect` reads and never writes.
+- Directories honour `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `XDG_CONFIG_HOME` / `OPENCLAW_HOME`; the
+  tests use exactly those four variables to put all four agent configs into a temporary directory and
+  never touch real user configuration.
+- Claude Code only honours env passed through `--settings`, and `--settings` does not read
+  `~/.claude`, so the recipe also carries a PowerShell / POSIX `$env:` / `export` block. When a key is
+  present, the 11 variables that must be unset are listed in the recipe (`ANTHROPIC_API_KEY`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_UNIX_SOCKET`, the six Foundry/Bedrock/Vertex/AWS/Google
+  Cloud/Mantle switches and their base_url/resource) — leaving any one of them will send the request
+  to the real Anthropic.
 
-命令行示例（实测 2026-10-12，`--key` 显式给出时不读用户配置）：
+Command-line examples (measured 2026-10-12; with `--key` given explicitly, user configuration is not
+read):
 
 ```
 python -m neo.connect list
@@ -352,44 +428,48 @@ python -m neo.connect codex --persist --lan
 python -m neo.wizard --check
 ```
 
-## 引擎源码树：按 pin 装（`neo/engine_setup.py`、`neo/engine_ref.json`）
+## Engine source tree: installed by pin (`neo/engine_setup.py`, `neo/engine_ref.json`)
 
-Neo 与 Strata 分家之后，引擎源码不在 Neo 的仓库里，Neo 按一个**钉住的 tag** 取它。
-`neo/engine_ref.json` 是一份 JSON，四样东西：仓库地址、tag、commit SHA、archive zip 的
-SHA-256。今天钉的是 `v0.1.43.1` = `a0116b2782a5b82622358c04a06496485d12b2d6`
-（部署树 `D:\Work\Strata` 的 HEAD 就是它）。
+Once Neo and Strata were split apart, the engine source no longer lives in Neo's repository; Neo
+fetches it by a **pinned tag**. `neo/engine_ref.json` is a JSON with four things: repository URL, tag,
+commit SHA, and the SHA-256 of the archive zip. Today's pin is `v0.1.43.1` =
+`a0116b2782a5b82622358c04a06496485d12b2d6` (the deploy tree `D:\Work\Strata` has exactly that HEAD).
 
-**取源码只认 GitHub 的 tag。** ModelScope 那类镜像给的是一个仓库的当前文件，不是钉住的
-revision —— 上游 `setup.py` 的 `model_source()` 里那句 `#908` 写的就是这件事。镜像只用于
-下模型（见"下载源探测"），不用于取源码。
+**Source is only taken from a GitHub tag.** Mirrors like ModelScope serve a repository's current
+files, not the pinned revision — that is exactly what `#908` in upstream `setup.py`'s `model_source()`
+says. Mirrors are only used for downloading models (see "Download-source probe"), never for source.
 
-两条路：
+Two roads:
 
 ```
 git clone --branch v0.1.43.1 --depth 1 --single-branch <url> strata/
-<url>/archive/refs/tags/v0.1.43.1.zip          （这台机器没有 git 时的退路）
+<url>/archive/refs/tags/v0.1.43.1.zip          (the fallback when this machine has no git)
 ```
 
-浅克隆出来是 detached HEAD，正合用：pin 是一个 commit SHA，不是一条分支。
-zip 是 GitHub 现打包的，**没有官方摘要**，所以 `zip_sha256` 是 Neo 这边算好钉进 pin 的：
-2026-10-13 下载 `v0.1.43.1` 的 archive zip，21,786,355 字节、3415 个条目，本地算出
-SHA-256 `9e37f07e87473210ac98ee6041e6651c02e1c473bf75eae65191840fa2b80768`，这一串写进
-`engine_ref.json`；解压前 Neo 自己再算一遍，对不上就一个文件都不解。
+A shallow clone lands on a detached HEAD, which is what we want: the pin is a commit SHA, not a
+branch. The zip is packed by GitHub on demand and has **no official digest**, so `zip_sha256` is
+computed on Neo's side and pinned: on 2026-10-13 the `v0.1.43.1` archive zip was downloaded —
+21,786,355 bytes, 3415 entries — the local SHA-256 came out
+`9e37f07e87473210ac98ee6041e6651c02e1c473bf75eae65191840fa2b80768`, and that string is what is written
+into `engine_ref.json`; before unpacking, Neo recomputes it and unpacks nothing if it does not match.
 
-**目录叫 `strata/`，不叫 `engine/`。** 上游 `setup.py` 的 `engine_dir()` 里 `engine/` 是
-**引擎二进制**的目录（根 `.gitignore` 里 `/engine/` 就是它），源码树不能占这个名字。
-`strata/` 在根 `.gitignore` 里：它是 clone 出来的，不进 Neo 的仓库。部署树里这一行不在
-`.gitignore`（那是上游的跟踪文件），在 `.git/info/exclude`，由 `neo/deploy.py` 补上。
+**The directory is called `strata/`, not `engine/`.** In upstream `setup.py`'s `engine_dir()`,
+`engine/` is the directory of the **engine binaries** (`/engine/` in the root `.gitignore` is that
+one), so the source tree must not take that name. `strata/` is in the root `.gitignore`: it is cloned,
+it does not enter Neo's repository. In the deploy tree that line is not in `.gitignore` (that is an
+upstream tracked file) but in `.git/info/exclude`, added by `neo/deploy.py`.
 
-`plan()` 是纯函数（不联网、不写文件），状态七个：`ready`（HEAD == pin 且 git 干净）、
-`clone`、`zip_copy`、`need_zip`、`checkout_pin`（HEAD 不是 pin）、
-`dirty`（有人改过 → 拒绝，Neo 不动用户的改动）、`not_a_git_tree`。zip 解出来没有 `.git`，
-HEAD 查不了，所以 Neo 在 `neo/state/engine.json` 里记一笔来历（装的时候摘要对上了 pin
-才写得进去），`ready` 认这一笔。
+`plan()` is a pure function (no network, no writes) with seven states: `ready` (HEAD == pin and git
+is clean), `clone`, `zip_copy`, `need_zip`, `checkout_pin` (HEAD is not the pin), `dirty` (someone
+edited it → refuse, Neo never touches the user's changes), `not_a_git_tree`. A zip unpacks without a
+`.git`, so HEAD cannot be checked; Neo therefore records a provenance note in `neo/state/engine.json`
+(it can only be written when the digest matched the pin at install time), and `ready` accepts that
+note.
 
-拿到源码之后 Neo 什么都不装：venv、依赖、引擎二进制、模型全交给上游 `setup.py`
-（`neo/wizard.py` 那条 `--yes --no-start`）。页面上是「接入」页的「引擎源码树」卡片
-（`GET /neo/engine`、`POST /neo/engine {"action":"install"}`），命令行是：
+After the source is in place Neo installs nothing: the venv, dependencies, engine binaries and models
+all belong to upstream `setup.py` (`neo/wizard.py`'s `--yes --no-start` road). In the UI it is the
+"engine source tree" card on the connect page (`GET /neo/engine`, `POST /neo/engine {"action":"install"}`);
+on the command line:
 
 ```
 python -m neo.engine_setup --check
@@ -397,65 +477,85 @@ python -m neo.engine_setup --ensure --no-setup
 python -m neo.engine_setup --ensure --zip D:\Downloads\Strata-0.1.43.1.zip
 ```
 
-`netprobe.py` 因此多量一个 `github.com`（443，与模型源一样只测连不连得上）。它不参与
-"模型从哪个源下"的建议 —— 那条建议只看 huggingface / hf-mirror / modelscope。
+`netprobe.py` therefore measures one more host, `github.com` (443, reachability only, like the model
+sources). It does not feed the "which source to download models from" suggestion — that suggestion only
+looks at huggingface / hf-mirror / modelscope.
 
-### 根目录怎么认（`neo/paths.py` 的 `strata_root()`）
+### How the root is resolved (`strata_root()` in `neo/paths.py`)
 
-一条规则，程序与测试共用（`neo/tests/_bootstrap.py` 里的 `ENGINE` 就是它算出来的）：
+One rule, shared by the program and the tests (`ENGINE` in `neo/tests/_bootstrap.py` is what it
+computes):
 
 ```
---root  >  NEO_STRATA_ROOT  >  应用目录本身  >  <应用目录>/strata  >  应用目录（理由里写"这里还没有引擎"）
+--root  >  NEO_STRATA_ROOT  >  the application directory itself  >  <app dir>/strata  >  the application directory (with "no engine here yet" in the reason)
 ```
 
-第 3、4 条要目录里 `setup.py` 与 `serve/server.py` 都在才认；前两条是用户点名，照用不检查
-（起不来由启动那一步明说，Neo 不偷偷换目录）。exe 放进 Strata 根目录时（今天所有用户的
-装法）第 3 条先命中，解析结果与改动前逐字节一致。
+Rules 3 and 4 only apply when the directory contains both `setup.py` and `serve/server.py`; the first
+two are the user naming a directory, so they are used as given with no marker check (if it cannot
+start, the start step says so plainly — Neo never silently swaps the directory). When the exe sits in
+the Strata root (the install every user has today), rule 3 hits first and the resolved result is
+byte-for-byte identical to what it was before this rule existed.
 
-### bump：换一版引擎要动什么
+### Bumping: what changes when the engine moves a version
 
-1. 上游发新 tag → 改 `neo/engine_ref.json` 的 `tag` 与 `sha`；
-2. 下载 `archive/refs/tags/<tag>.zip`，本地算 SHA-256 填进 `zip_sha256`（顺手记下字节数）；
-3. 部署树 `git checkout <tag>`（或 `git pull --ff-only`），再 `python -m neo.deploy --to <部署树>`；
-4. 全量测试重跑一遍，这一节与"测试"一节的数字按实测更新。
+1. Upstream publishes a new tag → edit `tag` and `sha` in `neo/engine_ref.json`;
+2. download `archive/refs/tags/<tag>.zip`, compute its SHA-256 locally and put it in `zip_sha256`
+   (record the byte count as well);
+3. in the deploy tree `git checkout <tag>` (or `git pull --ff-only`), then
+   `python -m neo.deploy --to <deploy tree>`;
+4. re-run the full test suite, and update the numbers in this section and in "Tests" with the new
+   measurements.
 
-## 模型设置页与语言/主题（`neo/model_settings.py`、`neo/gguf_meta.py`、`neo/web/i18n.js`）
+## Model settings page, language and theme (`neo/model_settings.py`, `neo/gguf_meta.py`, `neo/web/i18n.js`)
 
-模型设置页改的是**一个模型的启动参数**，四栏：上下文长度（`--max-context`）、KV 类型（`--kv`）、
-KV 常驻单元（`--kv-resident`）、显存保留（`--vram-reserve-mib`），外加图片开关（`--vision` 与 `vision` 段）。
-它是「设置」页里的第一块，左边栏不再有独立页签（2026-10-13 并入）：控件 id 一个没动，
-`showPage("settings")` 一次把「模型设置」与「启动设置」两块都拉出来（`if (name === "settings") { loadConfig(); loadModelSettings(); }`）。
-写法是**覆盖配置**：`setup.py` 写的那份 `strata-*.json` 只读，改动写进 `neo/state/configs/strata-<id>.neo.json`，
-启动时 `config_path_for()` 指到哪份就用哪份；删掉覆盖配置就是原样。四个数怎么来的都摆在页面上：
-KV 显存 = 常驻单元 × 每单元每层字节 × 层数，每单元每层的字节数出自 `bench/results/2026-09-27-kv-q4/README.md`
-（q4_0 576 B、int8 1,056 B），层数读 GGUF 头部（`neo/gguf_meta.py`，只读头部，不加载模型）。
+The model settings page changes **one model's launch parameters**: four fields — context length
+(`--max-context`), KV type (`--kv`), KV resident units (`--kv-resident`), VRAM reserve
+(`--vram-reserve-mib`) — plus the image switch (`--vision` and the `vision` section). It is the first
+block inside the "Settings" page; the left rail no longer has a separate tab (merged 2026-10-13): not
+one control id moved, and `showPage("settings")` pulls out both the "model settings" and the "launch
+settings" blocks in one call (`if (name === "settings") { loadConfig(); loadModelSettings(); }`).
+Writing is done as an **override config**: the `strata-*.json` written by `setup.py` is read-only,
+changes go to `neo/state/configs/strata-<id>.neo.json`, and at start `config_path_for()` points at
+whichever file exists; deleting the override returns to the original. How each of the four numbers is
+derived is shown on the page: KV VRAM = resident units × bytes per unit per layer × layer count, with
+the per-unit-per-layer byte figures from `bench/results/2026-09-27-kv-q4/README.md` (q4_0 576 B, int8
+1,056 B) and the layer count read from the GGUF header (`neo/gguf_meta.py`, header only, the model is
+never loaded).
 
-三个坑，测试守着：
+Three traps, each guarded by a test:
 
-- **关图片要两件一起做**：`serve/server.py:2348`（#1322）看见配置里 `vision` 段还在就把 `--vision` 加回去，
-  所以只删 flag 等于没关。Neo 删 flag 的同时把段置空，原段存进 `neo_vision_saved`，再开图片时还原回去
-  （mmproj 的路径 Neo 不猜，只还给人家原来那份）。
-- **`--kv-resident` 带值**：只删 flag 会把那个数变成一个孤零零的位置参数，引擎会把它当模型文件。删就连值一起删。
-- **页面传的是 "on"/"off" 字符串**：`bool("off")` 是 True，所以字符串逐字认（`on/true/yes/1/开`、
-  `off/false/no/0/关`），认不得的报错，不猜。
+- **Turning images off takes two actions together**: `serve/server.py:2348` (#1322) adds `--vision`
+  back whenever the `vision` section is still in the config, so deleting only the flag is the same as
+  not turning it off. Neo deletes the flag and empties the section at the same time, keeps the original
+  section in `neo_vision_saved`, and restores it verbatim when images are turned back on (Neo never
+  guesses the mmproj path — it only hands back the user's own).
+- **`--kv-resident` carries a value**: deleting only the flag leaves the number as a stray positional
+  argument, and the engine will treat it as the model file. When it is deleted, the value goes with it.
+- **The page sends `"on"`/`"off"` strings**: `bool("off")` is True, so the strings are matched
+  literally (`on/true/yes/1/开`, `off/false/no/0/关`); anything unrecognised is an error, never a guess.
 
-覆盖配置 = 上游那份 + 这次的改动，所以跟上游一样的键不写进去；这次要的跟上游一样时，
-已有的覆盖配置会被删掉（回到原样），而不是留着一份没用的。点了名却认不得的 id 不悄悄换成别的模型。
+The override config = upstream's file + this change, so keys identical to upstream are not written
+into it; when what this change wants already equals upstream, the existing override is deleted (back to
+the original) rather than kept as a useless copy. A model id that is named but not recognised is never
+silently swapped for another model.
 
-语言与主题只在页面里，Neo 与上游都不记：`neo/web/i18n.js` 认 `data-i18n` 键（静态文案整块换）与
-`app.js` 里的 `t("中文")`（动态文案），记忆键 `neo.lang` / `neo.theme` 存在 localStorage 里。
-**没有记忆时页面与以前逐字一样**（中文 + 暗色），i18n.js 不改一处文字。整个 i18n.js 包在一个 IIFE 里，
-只往外递一个 `window.NEO_I18N`（app.js 取的就是这个命名空间）：`<script src="/i18n.js">` 与
-`<script src="/app.js">` 是同一个全局作用域的两段经典脚本，顶层留名字就会与 app.js 撞名，浏览器解析
-app.js 时整段不跑（见「窗口上任何点击都没反应、状态永远「未启动」」）。主题只换 CSS 变量：
-`style.css` 里 `html[data-theme="light"]` 覆盖 `:root` 那一批变量，组件一律用 `var(--…)`，
-所以换主题不改任何一条组件规则（`neo/tests/test_ui.py` 里有一条量这个：`:root` 与
-`html[data-theme="light"]` 之外的规则里不许出现硬编码颜色）。
+Language and theme live only in the page — neither Neo nor upstream stores them: `neo/web/i18n.js`
+keys off `data-i18n` (static text is swapped block by block) and `t("中文")` in `app.js` (dynamic
+text), with the memory keys `neo.lang` / `neo.theme` in localStorage. **With no stored preference the
+page is word-for-word what it always was** (Chinese, dark theme) — i18n.js changes no text. The whole
+of i18n.js is wrapped in one IIFE exporting only `window.NEO_I18N` (the namespace app.js reads):
+`<script src="/i18n.js">` and `<script src="/app.js">` are two classic scripts in one global scope, so
+top-level names collide with app.js and the browser refuses to run app.js at all when parsing it (see
+"Every click was dead and the status stayed 'Not started'"). Theme only swaps CSS variables:
+`style.css` overrides the `:root` block with `html[data-theme="light"]`, components always use
+`var(--…)`, so switching themes changes no component rule (a test in `neo/tests/test_ui.py` measures
+exactly that: no hard-coded colours outside `:root` and `html[data-theme="light"]`).
 
-## 模型配置的形状（`strata-*.json`）
+## Shape of the model config (`strata-*.json`)
 
-配置是 `setup.py` 写的，Neo 只读它、拼成 `serve/server.py` 的命令行参数，不改上游一行。
-实测 2026-10-12 在 `D:\Work\Strata`（4 个配置全部识别，`installed=True`）：
+The config is written by `setup.py`; Neo only reads it and turns it into `serve/server.py`
+command-line arguments, changing not one line of upstream. Measured 2026-10-12 in `D:\Work\Strata`
+(all four configs recognised, `installed=True`):
 
 ```
 {"exe": "engine/strata.exe", "cwd": "D:\\Work\\Strata",
@@ -465,704 +565,870 @@ app.js 时整段不跑（见「窗口上任何点击都没反应、状态永远�
  "model_name": "swift-1.5-iq3_xxs", "port": 8080, "tokenizer": ..., "log": ..., "vision": {...}}
 ```
 
-- **模型文件在 `args` 的 `--native` 里**（其次 `--pack`、`vision.model`），**没有 `path` 键**；
-  上下文在 `--max-context` 里（其次 `--context`）。`neo/engines/strata.py` 的
-  `model_file_of()` / `context_of()` / `arg_value()` 两种形状都认（扁平列表与老字典）。
-- 早期只认 `path` + 字典 `args` 的版本在真实配置上永远算不出模型文件，启动时报的是
-  **空消息"模型文件不在："**（`cfg["path"]` 本来就是空的）—— 实测 2026-10-12 的 `manager.log`。
-- 引擎程序：配置里的 `exe` 键优先（相对路径按 `cwd` 展开，与 `serve/server.py` 里那句注释一样），
-  没有就看根目录的 `strata.exe` / `strata-hip.exe` / `strata-sycl.exe`。
-- 缺什么就一条一句写清（`missing_parts()`），启动被拒时原样给用户，不再报空消息。
-- 模型目录默认在 Strata 的 `<根目录>-data`（实测 `D:\Work\Strata-data`：`models` / `mtp` / `packs`）。
-- 没点名模型时挑一个**能启动的**配置（`base.py` 的 `default_config()`：点名的 → 第一个已安装的 →
-  第一个），全都不行才回第一个，让报错说的是它。
+- **The model file is inside `args`, under `--native`** (then `--pack`, `vision.model`); **there is no
+  `path` key**; the context is under `--max-context` (then `--context`). `model_file_of()` /
+  `context_of()` / `arg_value()` in `neo/engines/strata.py` accept both shapes (flat list and the old
+  dict).
+- The early version that only understood `path` + a dict `args` could never compute a model file from
+  real configs, and the start error it printed was **the empty message "model file missing: "**
+  (`cfg["path"]` was empty to begin with) — measured in `manager.log` on 2026-10-12.
+- Engine executable: the config's `exe` key wins (relative paths expand against `cwd`, matching the
+  comment in `serve/server.py`); if absent, the root's `strata.exe` / `strata-hip.exe` /
+  `strata-sycl.exe`.
+- Whatever is missing is written out one item per line (`missing_parts()`), and given to the user
+  verbatim when a start is refused — no more empty messages.
+- Model directories default to `<root>-data` next to Strata (measured `D:\Work\Strata-data`:
+  `models` / `mtp` / `packs`).
+- When no model is named, a config that **can start** is picked (`default_config()` in `base.py`: the
+  named one → the first installed one → the first one); only when none of them can start is the first
+  returned, so the error message is about something real.
 
-## 日志与控制台输出：刷屏的四个来源，逐个实测过
+## Logs and console output: four flood sources, each measured
 
-窗口被刷满这件事有四个独立的来源，各自修各自的，措辞与数字都来自实测
-（复现脚本 `neo/state/repro/crlf.py`、`neo/state/repro/flood.py`）。
+Flooding the window turned out to have four independent sources, each fixed on its own; every number
+and every wording below comes from a measurement (reproduction scripts
+`neo/state/repro/crlf.py`, `neo/state/repro/flood.py`).
 
-**1. `manager.log` 里的 `\r` 会随写入次数长出来（已修）。**
-`state.log()` 以前用文本模式回写日志尾部做清洗：`\n` 写出去变 `\r\n`，读回来再写就变
-`\r\r\n` —— 每写一次，前面每一行多一个 `\r`（实测连续 6 次写入后第一行带 6 个 `\r`）。
-控制台里每个 `\r` 把光标送回行首，一行就重画一遍，看起来像同一句话反复刷。
-现在写入走二进制、清洗只去 `\r` 不限行数（历史不丢）。实测连续写 8 条后文件里 0 个 `\r`。
+**1. `\r` in `manager.log` grew with the number of writes (fixed).**
+`state.log()` used to clean the log by reading the tail back in text mode and rewriting it: a `\n`
+written out becomes `\r\n`, and reading it back and writing it again makes `\r\r\n` — every write adds
+one more `\r` to every earlier line (measured: after 6 consecutive writes the first line carried 6
+`\r`). In a console each `\r` returns the cursor to the start of the line, so the line is redrawn once
+more, which looks like the same sentence repeating. Writes are now binary and cleaning only removes
+`\r` without limiting line count (history is not lost). Measured: after 8 consecutive writes the file
+contains 0 `\r`.
 
-**2. 一条几十万字符的行，以前原样穿过每一层（已修）。**
-pywebview/pythonnet 的属性链递归日志、`RecursionError` 的消息都是这种行。现在每一层都有界：
+**2. A single line of several hundred thousand characters used to pass through every layer intact
+(fixed).** pywebview/pythonnet's property-chain recursion log and `RecursionError` messages are lines
+like that. Every layer is now bounded:
 
-| 层 | 上限 | 实测 |
+| Layer | Limit | Measured |
 | --- | --- | --- |
-| 控制台 stdout/stderr（`neo/console_io.py`） | 单行 400 字符、每秒 30 行、5 秒内同样的行折叠成一条计数、控制字符（`\r`、BEL、ANSI 序列）换空格；只包 `isatty()` 为真的流，一次 `write()` 里 2–60 行算一整块放行 | 5000 条 36 万字符的 `.SyncRoot` 行（共 18 亿字符）灌进闸门 → 出来 441 字符、2 行、最长行 419 字符、0 个 `\r` |
-| `neo/state/logs/manager.log` | 单行裁到 400 字符并标"原长 N 字符"；写入前裁到尾部 200 KB | 同样 5000 条巨行 → 文件 196 KB、454 行、最长行 419 字符、0 个 `\r` |
-| `GET /neo/log` | 一次最多 60 KB / 600 行，行内已裁 | 灌过后应答 539 字符 |
-| 日志页（`neo/web/app.js`） | 一次取 60000 字符、最多渲染 400 行、内容没变不重画 | 页面不再被一条巨行卡死 |
-| `NEO-START.bat` 打印的尾部 | 15 行、控制字符换空格、单行 200 字符 | 实测 15 行、最长 77 字符、中文正常 |
-| 未捕获异常 | traceback 最多 40 行 / 4000 字符；`RecursionError` 不格式化 traceback（上千帧、消息本身几十万字符，格式化它自己要再递归一层），只给一句指向 pywebview 与同步目录的提示 | 90019 字符的异常消息进日志后单行 416 字符 |
+| Console stdout/stderr (`neo/console_io.py`) | 400 characters per line, 30 lines per second, identical lines folded into one count within 5 s, control characters (`\r`, BEL, ANSI sequences) replaced by spaces; only streams whose `isatty()` is true are wrapped; a 2–60-line `write()` passes as one whole block | 5000 `.SyncRoot` lines of 360k characters (1.8 billion characters total) pushed through the gate → out came 441 characters, 2 lines, longest line 419 characters, 0 `\r` |
+| `neo/state/logs/manager.log` | each line trimmed to 400 characters marked "original length N"; trimmed to the last 200 KB before writing | the same 5000 giant lines → file 196 KB, 454 lines, longest line 419 characters, 0 `\r` |
+| `GET /neo/log` | at most 60 KB / 600 lines per call, lines already trimmed | after the flood, the response was 539 characters |
+| The log page (`neo/web/app.js`) | fetches 60000 characters at a time, renders at most 400 lines, does not redraw when content is unchanged | the page is no longer wedged by one giant line |
+| The tail printed by `NEO-START.bat` | 15 lines, control characters replaced by spaces, 200 characters per line | measured 15 lines, longest 77 characters, Chinese intact |
+| Uncaught exceptions | traceback at most 40 lines / 4000 characters; `RecursionError` is not formatted into a traceback (thousands of frames, the message itself is hundreds of thousands of characters, formatting it recurses once more) — only one line pointing at pywebview and sync directories | a 90019-character exception message lands in the log as a 416-character line |
 
-**5. 闸门把机器要读的整块裁掉了（已修）。** 闸门按行裁（30 行/秒），`neo/manager.py`
-在 import 时就装它，于是两条实测到的副作用：`python -m neo.connect --json` 的 30 行 JSON
-被丢掉 26 行（页面拿到半截 JSON，`json.loads` 报 "Expecting value: line 31 column 1"）；
-测试里 `redirect_stdout` 换上的 `StringIO` 也被当成控制台包了闸门，unittest 的 traceback
-被折叠成"同样的行重复 N 次"，看不出是哪个测试出的错。现在两条规矩：`install()` 只包
-`isatty()` 为真的流（管道、文件、`StringIO` 一律不包 —— 刷屏只在控制台发生）；一次
-`write()` 里 2–60 行算一整块放行，从"整块额度"（`BURST_LINES` = 60 行/秒）里扣，超了照样丢。
-实测：一次写 40 行全部通过；一秒内两块 40 行，第二块超出额度被丢；500 行一次一行的洪水
-仍压到 120 行以内（`test_logging.py` 的 `test_one_print_block_passes_whole`、
-`test_burst_allowance_is_also_capped`、`test_rate_cap_drops_excess`、
-`test_install_leaves_a_pipe_alone`）。
+**5. The gate used to cut whole blocks the machine was about to read (fixed).** The gate trims by line
+(30 lines/s), and `neo/manager.py` installs it at import time, which produced two measured side
+effects: the 30-line JSON of `python -m neo.connect --json` lost 26 lines (the page received half a
+JSON and `json.loads` reported "Expecting value: line 31 column 1"); and the `StringIO` swapped in by
+`redirect_stdout` in tests was treated as a console and wrapped, so unittest's traceback was folded
+into "the same line repeated N times" and it was impossible to tell which test failed. Two rules now:
+`install()` only wraps streams whose `isatty()` is true (pipes, files and `StringIO` are never wrapped
+— flooding only happens on a console); and a 2–60-line `write()` passes as one whole block, charged
+against the "whole-block allowance" (`BURST_LINES` = 60 lines/s), with the excess dropped as before.
+Measured: 40 lines in one write all pass; two 40-line blocks in one second, the second is dropped for
+exceeding the allowance; a 500-line one-line-per-write flood is still compressed to under 120 lines
+(`test_logging.py`'s `test_one_print_block_passes_whole`, `test_burst_allowance_is_also_capped`,
+`test_rate_cap_drops_excess`, `test_install_leaves_a_pipe_alone`).
 
-`.bat` 里读日志用 `Get-Content -Encoding UTF8`：Windows PowerShell 5.1 默认按系统 ANSI
-码页解文件，UTF-8 的中文日志会被解成乱码（实测加 `-Encoding UTF8` 前后对比：
-`default` 出来是乱码字节，`utf8` 出来是"已停止（不会自动重启）"）。
+Reading the log in `.bat` uses `Get-Content -Encoding UTF8`: Windows PowerShell 5.1 decodes files with
+the system ANSI code page by default, so a UTF-8 Chinese log becomes mojibake (measured before/after
+adding `-Encoding UTF8`: `default` produced mojibake bytes, `utf8` produced
+"stopped (will not auto-restart)").
 
-**3. `.SyncRoot` 是外部噪音，不在仓库里。** 两条独立的路径都会打出这个名字：
+**3. `.SyncRoot` is external noise, not in the repository.** Two independent paths print that name:
 
-- pywebview 的 WinForms 后端经 pythonnet 打的属性链内部日志
-  （`window.native.ActiveControl...SyncRoot...GenericSansSerif`，那个 `SyncRoot` 是 .NET 的
-  `ISynchronizeInvoke.SyncRoot`）。闸门必须在 `import webview` **之前**装：logging 的
-  `StreamHandler` 抓的是当时那个 `sys.stderr` 对象，装晚了就管不住它。
-  `neo/manager.py` 里顺序是 `console_io.install()` → `state.install_excepthook()` → 才 import webview。
-- Windows 的重解析点：`Path.resolve()` 会跟着 OneDrive 同步根的 reparse point 走，
-  `os.readlink()` 对这种点回 `.SyncRoot`，realpath 一路拼回去直到 `maximum recursion depth exceeded`。
-  现在 `neo/paths.py` 的 `safe_resolve()` 不做文件系统遍历、深度封顶 64 段，`is_reparse()` 负责识别；
-  `state.py`、`manager.py`、`console_server.py`、`install_neo.py`、`engines/strata.py` 都改用它。
-  实测 5000 段 `.SyncRoot` 拼出来的路径被截到 64 段以内，不递归。
+- pywebview's WinForms backend logging property chains through pythonnet
+  (`window.native.ActiveControl...SyncRoot...GenericSansSerif`; that `SyncRoot` is .NET's
+  `ISynchronizeInvoke.SyncRoot`). The gate must be installed **before** `import webview`: logging's
+  `StreamHandler` captures whatever `sys.stderr` object exists at that moment, so installing late
+  means it cannot govern it. The order in `neo/manager.py` is `console_io.install()` →
+  `state.install_excepthook()` → only then import webview.
+- Windows reparse points: `Path.resolve()` follows the reparse point of a OneDrive sync root,
+  `os.readlink()` answers `.SyncRoot` for such a point, and realpath concatenates all the way back
+  until `maximum recursion depth exceeded`. `safe_resolve()` in `neo/paths.py` now does no filesystem
+  walk and caps depth at 64 segments, with `is_reparse()` recognising them; `state.py`, `manager.py`,
+  `console_server.py`, `install_neo.py` and `engines/strata.py` all use it. Measured: a path built
+  from 5000 `.SyncRoot` segments is truncated to under 64 segments, no recursion.
 
-**4. 给用户的建议**：Neo 或 Strata（含模型目录）放在 OneDrive / 其他同步目录里时，
-把目录移出同步范围，或用 `--root` 指一个普通目录。窗口里的输出已经裁过，完整日志在
-`neo/state/logs/manager.log`。
+**4. Advice for users**: when Neo or Strata (including the model directory) sits in OneDrive or
+another sync directory, move it out of the sync scope, or point `--root` at a plain directory. Window
+output is already trimmed; the complete log is `neo/state/logs/manager.log`.
 
-## 窗口点了就"未响应"（已修，pywebview 6.2.1 / WinForms + WebView2）
+## Clicking made the window "(Not responding)" (fixed, pywebview 6.2.1 / WinForms + WebView2)
 
-标题栏上的"(未响应)"就是窗口线程没在收消息。这条线程是 pywebview 自己起的 STA 线程
-（`platforms/winforms.py` 的 `create_window`：`ThreadStart(create)` + `ApartmentState.STA`），
-Python 主线程只在 `thread.Join(500)` 里转。页面里一次点击经 pywebview 的 js_api 桥的完整路子：
+"(Not responding)" in the title bar means the window thread is not pumping messages. That thread is
+pywebview's own STA thread (`create_window` in `platforms/winforms.py`: `ThreadStart(create)` +
+`ApartmentState.STA`); the Python main thread just spins in `thread.Join(500)`. The full path of one
+click in the page through pywebview's js_api bridge:
 
-1. 点按钮 → WebView2 `PostWebMessageAsJson` → `platforms/edgechromium.py:225` 的
-   `on_script_notify` **在窗口线程上**执行，它里面的 `print` 也在这条线程上写 stdout；
-2. `util.py:247` 的 `js_bridge_call` 把 `Shell` 的方法丢到新线程跑（这一段不挡窗口）；
-3. 方法返回后 `window.evaluate_js(...)` 把结果送回页面 → `platforms/edgechromium.py:137` 里
-   `self.webview.Invoke(...)` **同步投递给窗口线程**，再 `semaphore.acquire()` 等它跑完；
-4. 窗口线程跑这个委托要抢 GIL。它一旦长时间抢不到 GIL，或者被 `print` 卡在控制台上，
-   消息循环就停住：所有 js_api 调用都不返回，窗口点什么都没反应。
+1. Click a button → WebView2 `PostWebMessageAsJson` → `on_script_notify` at
+   `platforms/edgechromium.py:225` runs **on the window thread**, and the `print` inside it writes
+   stdout on that same thread;
+2. `js_bridge_call` in `util.py:247` throws the `Shell` method onto a new thread (that part does not
+   block the window);
+3. when the method returns, `window.evaluate_js(...)` sends the result back to the page →
+   `self.webview.Invoke(...)` at `platforms/edgechromium.py:137` **posts synchronously to the window
+   thread**, then `semaphore.acquire()` waits for it to finish;
+4. for the window thread to run that delegate it must acquire the GIL. If it cannot get the GIL for a
+   long time, or is stuck on a `print` against the console, the message loop stops: every js_api call
+   stops returning and the window ignores all clicks.
 
-**主修：摘掉这座桥，动作全走服务。** `neo/manager.py` 的 `window_kwargs()` 里**没有 `js_api`**，
-窗口只是容器；页面（`neo/web/app.js`）的每个动作只发 HTTP 到控制台服务，连"打开聊天页 /
-监控页"（`POST /neo/open`）和"打开日志文件"（`POST /neo/open-log`）也一样，由挂在服务上的
-`Shell` 执行（`neo/console_server.py` 的 `_shell_action`）。点击路径上一行 Python 都不跑，
-窗口线程只做一件事：收消息。浏览器界面走的是同一批接口，两条路从此完全一样。
-`neo/tests/test_ui.py` 的 `TestClickPathIsHttpOnly` 盯着这条 —— 窗口参数里出现 `js_api`、
-页面代码里出现 `window.pywebview`，测试就红。
+**Main fix: remove the bridge, all actions go through the service.** `window_kwargs()` in
+`neo/manager.py` has **no `js_api`**; the window is only a container. Every action in the page
+(`neo/web/app.js`) is an HTTP call to the console service — including "open the chat / monitor page"
+(`POST /neo/open`) and "open the log file" (`POST /neo/open-log`), which are executed by the `Shell`
+attached to the service (`_shell_action` in `neo/console_server.py`). Not one line of Python runs on
+the click path; the window thread does one thing: pump messages. The browser UI uses the same set of
+endpoints, so the two paths are now completely identical. `TestClickPathIsHttpOnly` in
+`neo/tests/test_ui.py` watches this — if `js_api` appears in the window kwargs, or `window.pywebview`
+appears in the page code, the test goes red.
 
-实测 2026-10-12（Windows 11 / pywebview 6.2.1 / 打包的 `NeoStrata.exe`，mock 引擎，端口 8780）：
-窗口开着跑 95 秒（页面每 2 秒一次 HTTP 轮询），`Responding=True`，`manager.log` 里 0 次"没应答"；
-`GET /neo/status` 8.7 ms、`POST /neo/start` 4.5 ms、`POST /neo/open` 65.3 ms（真开了浏览器）、
-`POST /neo/open-log` 146.7 ms（真打开了日志文件）。同一个 exe 放进 `D:\Work\Strata` 跑
-`--no-start`：窗口 `Responding=True`、模型页列出 4 个模型、`POST /neo/open` 回 200、日志 0 次"没应答"。
+Measured 2026-10-12 (Windows 11 / pywebview 6.2.1 / the packaged `NeoStrata.exe`, mock engine, port
+8780): window open for 95 seconds (the page polls over HTTP every 2 s), `Responding=True`, 0 "no
+answer" entries in `manager.log`; `GET /neo/status` 8.7 ms, `POST /neo/start` 4.5 ms, `POST /neo/open`
+65.3 ms (a browser really opened), `POST /neo/open-log` 146.7 ms (the log file really opened). The same
+exe placed in `D:\Work\Strata` running `--no-start`: window `Responding=True`, the model page lists 4
+models, `POST /neo/open` returns 200, log has 0 "no answer".
 
-桥摘掉之前喂这个坑的三处留着 —— 它们挡的是"窗口线程上的 print 与 GIL"，看门狗探针和
-pywebview 自己的线程仍然走那条路：
+The three places that used to feed this trap are kept — they guard "print on the window thread and the
+GIL", and the watchdog probe and pywebview's own threads still take that road:
 
-| 处 | 原来 | 现在 | 实测 |
+| Place | Before | Now | Measured |
 | --- | --- | --- | --- |
-| `console_io.BoundedStream.write` | 排队等 `_lock`。有线程卡在真流的写上（控制台被 QuickEdit 选中、管道满）时，窗口线程跟着挂住 | 拿不到锁立刻返回，这一行丢掉并计数 | 别的线程占住锁时 `write()` 立刻返回（测试断言 < 0.5 秒），行计入"控制台写不动，丢弃 N 行" |
-| `state.log()` | 每条日志把整个尾部（最多 200 KB）读出来逐行清洗再整份回写，全程握着 GIL | 常态只追加一行，超过 `LOG_MAX` 才裁一次 | 20 条日志 = 20 次追加写、文件里 0 个 `\r`；6 个线程并发 90 条，不丢不咬 |
-| `Shell.stop()` | `sup.stop()` 里 `thread.join(timeout=10.0)`，这条调用挂 10 秒，页面里 `await` 它的按钮一直转 | `join_s=0.5`，剩下的收尾由监督线程自己走完，状态页靠 2 秒一次的轮询更新 | 点停止 0.5 秒内回话 |
+| `console_io.BoundedStream.write` | queued waiting for `_lock`; when a thread was parked on a real stream write (console selected by QuickEdit, full pipe), the window thread hung with it | returns immediately if the lock is not available; the line is dropped and counted | with another thread holding the lock, `write()` returns immediately (the test asserts < 0.5 s) and the lines are counted in "console cannot be written, dropped N lines" |
+| `state.log()` | every log line read the whole tail (up to 200 KB), cleaned it line by line and rewrote the whole file, holding the GIL throughout | appends one line in the normal case, trims once only when `LOG_MAX` is exceeded | 20 log lines = 20 append writes, 0 `\r` in the file; 6 threads writing 90 lines concurrently, nothing lost, nothing interleaved |
+| `Shell.stop()` | `sup.stop()` did `thread.join(timeout=10.0)`, so the call hung for 10 seconds and the button that `await`s it spun the whole time | `join_s=0.5`; the remaining wind-down is finished by the supervision thread itself, and the status page updates through its 2-second poll | pressing Stop answers within 0.5 s |
 
-顺带修掉一件事：pywebview 6.2.1 **没有** `window.get_geometry()`（实测 `window.py` 里搜不到
-`geometry`），`neo/manager.py` 以前每 5 秒调一次、每次抛 `AttributeError` 被 `except Exception`
-吃掉 —— 窗口几何从来没存下来过。现在几何从 `events.resized` / `events.moved` 事件里取
-（`event.py` 的 `Event.set` 起线程跑回调，回调里只往字典记两个数：不碰文件、不碰窗口线程），
-后台线程每 5 秒存一次。实测带窗口起来一次后 `neo/state/window.json` 里是真实坐标
-（`x=20, y=261, w=1280, h=860`）。
+One more thing fixed on the way: pywebview 6.2.1 **does not have** `window.get_geometry()` (measured:
+`geometry` is not in `window.py`). `neo/manager.py` used to call it every 5 seconds, each call raising
+`AttributeError` swallowed by `except Exception` — window geometry had never been saved. Geometry is now
+taken from the `events.resized` / `events.moved` events (`Event.set` in `event.py` starts a thread for
+the callback; the callback only records two numbers in a dict: no file access, no touching the window
+thread), and a background thread stores it every 5 seconds. Measured: after one windowed start,
+`neo/state/window.json` contains real coordinates (`x=20, y=261, w=1280, h=860`).
 
-**看门狗 `neo/ui_watchdog.py`**：每 2 秒用 pywebview 自己那条路探一次窗口线程 ——
-`window.evaluate_js("1")` 必须等窗口线程收消息才回得来。超过 3 秒没回音就认定卡住，把每个
-Python 线程当前停在哪一帧（`sys._current_frames()`）逐行写进 `neo/state/logs/manager.log`，
-两次现场之间至少隔 30 秒。探针只在后台线程上跑，在飞的最多 4 个。实测带窗口跑 1 分钟
-（页面每 2 秒一次 HTTP 轮询）：日志里 0 次"没应答"，进程 `Responding=True`；测试里把
-`evaluate_js` 挂住，日志里立刻出现"没应答"和 `neo-ui-probe` 停在哪一帧。
+**The watchdog `neo/ui_watchdog.py`**: every 2 seconds it probes the window thread through pywebview's
+own road — `window.evaluate_js("1")` only returns when the window thread pumps messages. Silence beyond
+3 seconds counts as stuck, and the frame each Python thread is currently in (`sys._current_frames()`)
+is written line by line into `neo/state/logs/manager.log`; at least 30 seconds between two snapshots.
+The probe only runs on background threads, at most 4 in flight. Measured with a window for 1 minute
+(the page polls over HTTP every 2 s): 0 "no answer" in the log, process `Responding=True`; in tests,
+freezing `evaluate_js` immediately produces "no answer" in the log plus the frame `neo-ui-probe` is
+sitting in.
 
-## 聊天页与监控页是空白的（已修）
+## The chat and monitor pages were blank (fixed)
 
-窗口里点"聊天"/"监控"，内嵌框是一块 1062x677 的空白；状态页的胶囊写着"未启动"，
-而 8080 上的服务在正常应答（`/health` 200、`/neo/status` 200）。
+Clicking "Chat" / "Monitor" in the window left a 1062x677 blank embedded frame; the status pill said
+"Not started" while the service on 8080 was answering normally (`/health` 200, `/neo/status` 200).
 
-实测 2026-10-12 在真开的窗口里（pywebview 6.2.1 / WebView2，页面 `http://127.0.0.1:8083/`）：
-页面的资源列表里只有 `style.css`、`icon.svg`、`app.js` 三条，**一次 `/neo/status` 都没有** ——
-页面根本没开始轮询。原因在 `neo/web/app.js`：`num()` 的函数体只写了开头就断了，从 `render`
-到所有按钮接线全落进它的身体里，文件末尾那句 `poll()` 成了 `ReferenceError`，`last` 永远是
-null，`ensureFrame()` 直接 return，两个内嵌框的 `src` 就停在 `about:blank`。行首缩进看不出
-这种损坏（被吞掉的代码本来就顶格写），花括号深度能看出来。
+Measured 2026-10-12 in a real open window (pywebview 6.2.1 / WebView2, page `http://127.0.0.1:8083/`):
+the page's resource list contained only `style.css`, `icon.svg` and `app.js` — **not one
+`/neo/status` request**: the page had never started polling. The cause was in `neo/web/app.js`: the body
+of `num()` was cut off after its opening, so `render` and every button wiring fell inside its body, the
+final `poll()` at the end of the file became a `ReferenceError`, `last` stayed null, `ensureFrame()`
+returned immediately, and the two embedded frames' `src` stayed at `about:blank`. Leading indentation
+does not reveal this kind of damage (the swallowed code was written flush left anyway); brace depth
+does.
 
-修法是补上 `num()` 的闭合，接线与轮询回到顶层。修完在同一个探针下重测（源码跑
-`--engine strata --no-start`，控制台 8084，服务是 8080 上那个在跑的）：`/neo/status` 每 2 秒
-一次（200，2 ms）、状态胶囊"运行中"、聊天框 `src=http://127.0.0.1:8080/`、监控框
-`src=http://127.0.0.1:8080/#monitor`，5 秒后两个框都是 1062x677、内页是跨源文档。
-同一个 iframe 在 Edge 无头截图里渲染出完整的 Strata 监控页（Speed / VRAM / PCIe 卡片与
-请求表都在）；`127.0.0.1:8080` 不发 `X-Frame-Options` 也不发 CSP，内嵌不被挡。
+The fix was to close `num()`, returning wiring and polling to the top level. Re-measured under the same
+probe (source run with `--engine strata --no-start`, console on 8084, the service the one already
+running on 8080): `/neo/status` every 2 seconds (200, 2 ms), status pill "Running", chat frame
+`src=http://127.0.0.1:8080/`, monitor frame `src=http://127.0.0.1:8080/#monitor`; after 5 seconds both
+frames were 1062x677 with a cross-origin document inside. The same iframe rendered the complete Strata
+monitor page in a headless Edge screenshot (Speed / VRAM / PCIe cards and the request table all
+present); `127.0.0.1:8080` sends no `X-Frame-Options` and no CSP, so embedding is not blocked.
 
-回归测试：`neo/tests/test_ui.py` 的 `TestAppJsTopLevelWiring` 用花括号深度扫描
-（`js_depth_lines`，跳过注释、字符串、模板串与正则字面量）盯 `render`、`poll`、`ensureFrame`、
-`num` 在顶层，文件末尾的 `poll();` 与 `setInterval(poll, 2000);` 在顶层，花括号配平。
-把 `num()` 的闭合去掉，这几条立刻红。
+Regression test: `TestAppJsTopLevelWiring` in `neo/tests/test_ui.py` uses a brace-depth scan
+(`js_depth_lines`, skipping comments, strings, template literals and regex literals) to pin that
+`render`, `poll`, `ensureFrame` and `num` are at top level, that the file's final `poll();` and
+`setInterval(poll, 2000);` are at top level, and that braces balance. Remove `num()`'s closing brace and
+these tests go red immediately.
 
-## 状态页的卡片全是"—"、请求栏写成 [object Object]（已修）
+## Status cards were all "—" and the requests row read [object Object] (fixed)
 
-用户 2026-10-12 的窗口截图：服务在跑（状态胶囊"运行中"、上下文 202,072），六张卡片里
-**生成速度 / 解码步长 / 显存 / 内存 / 在跑的请求**五张是"—"，"上下文"那张的副标题写的是
-"请求 [object Object],[object Object]"。
+The user's window screenshot on 2026-10-12: the service was running (status pill "Running", context
+202,072), and of the six cards **generation speed / decode step / VRAM / RAM / running requests** were
+five "—", with the "Context" card's subtitle reading "requests [object Object],[object Object]".
 
-实测 2026-10-12 在本机（RTX 5090 D v2 / Windows 11 / Python 3.13.15，
-`serve/server.py --engine mock --port 28181`，跑过一次 `/v1/chat/completions` 后取）：
-`/metrics` 的顶层只有 `engine`、`live`、`requests`、`requests_kept`、`totals`、`hardware`、
-`hardware_static`、`history`、`time` 九个键，卡片要的数字全在节里 ——
+Measured 2026-10-12 on this machine (RTX 5090 D v2 / Windows 11 / Python 3.13.15,
+`serve/server.py --engine mock --port 28181`, read after one `/v1/chat/completions`): the top level of
+`/metrics` has only nine keys — `engine`, `live`, `requests`, `requests_kept`, `totals`, `hardware`,
+`hardware_static`, `history`, `time` — and every number the cards want lives inside the sections:
 
-| 节 | 里面有什么 |
+| Section | What is inside |
 | --- | --- |
-| `live` | 当前请求：`state`、`queued`、`phase`、`prompt_tokens`、`generated`、`tok_s`、`tok_s_mean`（`--batch` 时另有 `running`、`slots`、`waiting`） |
-| `totals` | 累计：`requests`、`prompt_tokens`、`reused`、`output_tokens`、`prompt_ms`、`decode_ms` |
-| `hardware` | 每秒一采：`gpu_util`、`gpu_mem_used`、`gpu_mem_total`（字节）、`gpu_temp`、`gpu_power`、`cpu`（百分比）、`ram_used`、`ram_total`（字节）、`disk_read_mb`、`disk_write_mb` |
-| `hardware_static` | `gpu_name`、`gpu_count`、`gpu_note`、`cpu_name`、`cores`、`threads` |
+| `live` | the current request: `state`, `queued`, `phase`, `prompt_tokens`, `generated`, `tok_s`, `tok_s_mean` (with `--batch` also `running`, `slots`, `waiting`) |
+| `totals` | cumulative: `requests`, `prompt_tokens`, `reused`, `output_tokens`, `prompt_ms`, `decode_ms` |
+| `hardware` | sampled once per second: `gpu_util`, `gpu_mem_used`, `gpu_mem_total` (bytes), `gpu_temp`, `gpu_power`, `cpu` (percent), `ram_used`, `ram_total` (bytes), `disk_read_mb`, `disk_write_mb` |
+| `hardware_static` | `gpu_name`, `gpu_count`, `gpu_note`, `cpu_name`, `cores`, `threads` |
 
-而 `neo/engines/base.py` 以前按 41 个扁平键（`tokens_per_s`、`decode_step_ms`、`gpu_used_mib`、
-`ram_used_gb` …）在**顶层**挑：这些名字上游一个都没发过，卡片要的键里只有 `requests` 在，
-而它是最近 12 条请求的**记录列表** —— 列表被模板串写进文字就是 `[object Object],[object Object]`。
+`neo/engines/base.py` used to pick from 41 flat key names (`tokens_per_s`, `decode_step_ms`,
+`gpu_used_mib`, `ram_used_gb`, …) at the **top level**: upstream has never published any of those names,
+and of the keys the cards wanted only `requests` existed — and it is the **record list** of the last 12
+requests; interpolating a list into a template string is `[object Object],[object Object]`.
 
-修法两层：`base.py` 的 `flatten_metrics()` 按真实的节取值并换算单位（字节 → MiB / GB、
-`decode_ms / output_tokens` → ms/步、`live.running` 或 `live.state` → 在跑的请求数），
-上游没有的键就不出现，页面显示"—"；`app.js` 的卡片一律经过 `num()` / `count()`，
-`count()` 对列表与对象回"—"，页面这一层也写不出 `[object Object]`。
+The fix has two layers: `flatten_metrics()` in `base.py` reads values from the real sections and converts
+units (bytes → MiB / GB, `decode_ms / output_tokens` → ms/step, `live.running` or `live.state` → number
+of running requests); keys upstream does not have simply do not appear and the page shows "—". In
+`app.js` every card goes through `num()` / `count()`, and `count()` answers "—" for lists and objects, so
+the page layer cannot produce `[object Object]` either.
 
-修完实测（`python -m neo.console_server mock 28190`，Edge 无头截图 1500x420）：显存
-**24079 / 24455 MiB · NVIDIA GeForce RTX 5090 D v2**、内存 **70.4 / 93.6 GB**、在跑的请求
-**0**（排队 0）、上下文 **32,768**、请求 **0**；生成速度与解码步长在空闲时是"—" ——
-没有请求在生成，不编一个 0 出来。
+Measured after the fix (`python -m neo.console_server mock 28190`, headless Edge screenshot 1500x420):
+VRAM **24079 / 24455 MiB · NVIDIA GeForce RTX 5090 D v2**, RAM **70.4 / 93.6 GB**, running requests
+**0** (queued 0), context **32,768**, requests **0**; generation speed and decode step are "—" when
+idle — with nothing generating, no fake 0 is invented.
 
-回归测试：`test_engines.py` 的 `TestMetricsFlatten`（8 个，吃的是上面那次真应答的载荷）、
-`test_supervisor.py` 的 `test_status_metrics_are_numbers`（真进程，值里不许有列表/对象）、
-`test_upstream_api.py` 的 `test_metrics_sections_neo_flattens_still_exist`（上游改名先响）、
-`test_ui.py` 的 `TestStatusPageMetricCards`（卡片只经过 `num()` / `count()`，`m.requests`
-这类不许直接嵌进模板串）。
+Regression tests: `TestMetricsFlatten` in `test_engines.py` (8, fed the payload from that real
+response), `test_status_metrics_are_numbers` in `test_supervisor.py` (real process; no lists or objects
+in the values), `test_metrics_sections_neo_flattens_still_exist` in `test_upstream_api.py` (upstream
+renames ring this first), and `TestStatusPageMetricCards` in `test_ui.py` (cards only pass through
+`num()` / `count()`; things like `m.requests` must not be interpolated directly into a template string).
 
-## 窗口上任何点击都没反应、状态永远「未启动」（已修）
+## Every click was dead and the status stayed "Not started" (fixed)
 
-用户 2026-10-13 的新 exe：窗口出得来、进程在跑、8080 的服务与 8083 的控制台都在正常应答，
-但状态胶囊一直是「未启动」、六张卡片全是「—」、「发生了什么」是空的，**任何点击都没反应**。
+Symptom: the window opens, the page is fully laid out, the status pill stays "Not started" forever,
+every button is dead, and the embedded chat/monitor frames are blank.
 
-服务端没问题：窗口取到的 `/app.js` 与源码逐字节一致，`/neo/status` 200，HTML 里的 id 与
-`app.js` 里引用的 id 全对得上，也没有全屏遮罩挡点击。问题在页面的 JavaScript。根因是
-**两个 `<script>` 共享同一个全局作用域**：`index.html` 里 `<script src="/i18n.js">` 与
-`<script src="/app.js">` 是两段经典脚本，i18n.js 顶层有 `function t` 与 `function applyLang`，
-app.js 顶层有 `const t` 与 `const applyLang`。浏览器在**解析** app.js 时抛
-`SyntaxError: Identifier 't' has already been declared` —— app.js 一行都不执行：`poll()` 没跑起来
-（状态与卡片停在初始值），`document.querySelectorAll(".tab")` 那一批 onclick 一个都没挂
-（点什么都没反应）。i18n.js 是这次新加的，所以只有新 exe 出现。
+Root cause: `neo/web/index.html` loads two scripts in sequence — `<script src="/i18n.js">` and
+`<script src="/app.js">`. Two classic scripts **share one global scope**, and i18n.js declared
+top-level names that collide with app.js: `const t` (app.js has `const t = (zh, en) => …`),
+`function applyLang` (app.js calls it at the end of its top level), `const LANGS`, `const LANG_KEY`,
+`const THEME_KEY`, `let theme`. The collision is reported when app.js is parsed
+(`Identifier 't' has already been declared`), so **app.js does not execute a single line**: `poll()`
+is never called, `setInterval` is never registered, the buttons have no handler, and the status pill
+stays at its initial value. The page looks normal (the HTML is static), every click is dead.
 
-为什么 385 条测试全绿、exe 也照打成功：逐文件的语法检查看不见跨文件重名 ——
-`node --check neo/web/i18n.js` 与 `node --check neo/web/app.js` 各自都合法。最小重现
-`function t(){}; const t = 1;` 拼在一个文件里，`node --check` 报的就是浏览器那句原话。
+Fix: i18n.js is wrapped in one IIFE, exporting only `window.NEO_I18N` (the namespace app.js reads);
+no top-level name is left.
 
-修法：`neo/web/i18n.js` 整个文件包进一个 IIFE，只往外递 `window.NEO_I18N`。app.js 一直是
-`const I18N = window.NEO_I18N || {}` 再 `I18N.t(...)`，取的就是这个命名空间，所以包起来
-不改任何一处文案。实测包之前 i18n.js 顶层 14 个声明，包之后 0 个。
+Regression test: `TestNoGlobalScopeCollision` in `neo/tests/test_ui.py` — it extracts the top-level
+declared names of the two scripts and asserts the intersection is empty, and asserts i18n.js has no
+top-level declarations. Add a top-level `const t` to i18n.js and the test goes red immediately.
 
-防回归是**打包前的闸门**：`neo/webcheck.py` 按 `index.html` 的加载顺序把页面**当一个程序**查 ——
-花括号配平、跨文件顶层重名、`poll` / `render` / `ensureFrame` 与末尾的 `poll();` 在不在顶层、
-i18n.js 有没有把 `NEO_I18N` 挂到 window；机器上有 node 时把拼接后的整段交给 V8 解析一遍
-（`node --check`），没 node 就跳过这一关并说明跳过。命令行：
+## The service was running and the pill in the corner said "Start" (fixed)
+
+The user's words: the model is already started, so the button should be "Stop". In the screenshot the
+status pill read "Running" and the service row read "Running · model ready", yet among the three
+buttons in the top-right corner **Start was the bright blue primary button and Stop was grey**.
+
+Measured 2026-10-12 (`python -m neo.console_server mock 28210`, headless Edge screenshot 1500x120,
+`/neo/status` answering `state=running`, `healthy=true`, `loaded=true`):
+
+- `neo/web/style.css` had **not one `:disabled` rule** — a disabled button looked exactly like an
+  enabled one, and the blue of `button.primary` was hard-wired onto "Start" (the class shipped in
+  `index.html`, never swapped by the page), so a running page read as "you should press Start".
+- The disable logic itself was right (`btn-start` is disabled in running/starting, `btn-stop` only
+  disabled in idle); it was purely a styling problem.
+
+Fix: the primary blue follows "the button that can be pressed right now" — in `app.js`'s `render()`,
+`running / starting / stopping / external` light up **Stop**, and when stopped they light up **Start**;
+`style.css` gained `button:disabled` (`opacity .42` + `not-allowed`) and `button.primary:disabled`
+(back to grey background, grey text), so a disabled button is obvious at a glance.
+
+Measured after the fix (same probe, same screenshot size): with `state=running` the top-right corner
+shows **Stop** in bright blue and **Start** greyed out.
+
+Regression test: `TestHeaderActionButtons` in `test_ui.py` (3) — the CSS must contain
+`button:disabled` and `button.primary:disabled`; both `btn-start` and `btn-stop` must
+`toggle("primary")`; `btn-stop`'s disable condition must not mention `running` / `external` /
+`stopping` (when it is running, it must be stoppable).
+
+## The model page's "Start it": what happens when you press it while running
+
+The user asked: does "Start it" in the model list require the service to be stopped first?
+
+**No, you don't stop it first.** `set_model` (`neo/supervisor.py:156`) is "record the new model +
+`stop()` + `start()`" — Neo stops the current service itself and restarts it with the new model.
+Measured 2026-10-12 (real mock process, `TestSetModel` in `neo/tests/test_supervisor.py`): calling it
+while running changes the pid, the state returns to running, and `last_exit` is empty — a model switch
+the user asked for is not an unexpected exit, so the "last exit" row on the status page does not light
+up because of it.
+
+The cost is that **requests in flight get cut** (`stop()` kills the whole child-process tree once the
+graceful-exit window is over). The button used to just say "Start it", identical whether running or
+stopped, so nothing about the consequence was visible. Now it is spelled out:
+
+- current model: button "In use", disabled;
+- service running (running / starting / stopping / external): button "Switch to it", hover text "will
+  first stop the current service (requests in flight will be cut), then start again with «model
+  name»";
+- stopped: button "Start it", hint "start the service with «model name»"; models whose file is missing
+  are always disabled.
+
+Regression tests: `TestModelPageSwitch` in `test_ui.py` (4) and `TestSetModel` in `test_supervisor.py`
+(1).
+
+## The window was blank (fixed)
+
+Symptom: the window opens, the title bar is normal, the content area is blank.
+
+Root cause: `neo/manager.py` used to read the page files from `Path(__file__).parent / "web"`. After
+packaging, `__file__` points inside the PyInstaller archive, so `web/` is not next to it; the page
+files are in the archive, and the console service's `WEB` pointed at a nonexistent directory — every
+request 404, the window blank.
+
+Fix: `neo/paths.py::web_dir()` — `sys._MEIPASS` (the PyInstaller extraction directory) wins, otherwise
+`neo/web` next to the source.
+
+## Packaging: `NeoStrata.exe` (fixed)
+
+`python -m neo.build_exe` (spec `neo/NeoStrata.spec`) → `dist/NeoStrata.exe` (measured 2026-10-12:
+7,181,111 bytes, 6.85 MB). The spec bundles `neo/web` (the page files) and `neo/engine_ref.json`
+(the pinned source version) as data files; `neo.paths.web_dir()` and `neo.engine_setup.ENGINE_REF`
+both read them from `sys._MEIPASS`. The exe is built with `--name NeoStrata` and is designed to sit in
+the Strata root directory (the root resolution rule above is exactly for that).
 
 ```
-python -m neo.webcheck           # 体检 neo/web/，不干净非零退出
-```
-
-`neo/build_exe.py` 在调 PyInstaller 之前先跑它（`web_gate()`），不干净拒绝出包。实测把 i18n.js
-的 IIFE 拆掉再跑闸门，报的是：
-
-```
-- t 在 i18n.js:57 与 app.js:14 的顶层都声明了：同一全局作用域里这是解析期 SyntaxError，app.js 整段不跑
-- applyLang 在 i18n.js:71 与 app.js:15 的顶层都声明了：同一全局作用域里这是解析期 SyntaxError，app.js 整段不跑
-- 页面脚本按加载顺序拼起来 V8 解析不过：SyntaxError: Identifier 't' has already been declared
-```
-
-回归测试：`neo/tests/test_ui.py` 的 `TestWebCheck`（8 个）—— 真树体检干净、闸门放行；拆掉 IIFE
-后闸门拒绝出包并点名撞的两个名字；有 node 时 V8 报的是浏览器那句原话、没 node 时不许假装跑过；
-花括号漏一个要报；顶层的 `poll();` 与 `setInterval(poll` 都没了要报；`<script>` 指的文件不在要报；
-顶层名字要抓到 40 个以上（不然这条检查等于没跑）。
-
-## 服务在跑，右上角亮的却是「启动」（已修）
-
-用户的话：模型已经启动了，应该是停止。截图里状态胶囊是"运行中"、服务表写"运行中·模型已就绪"，
-右上角三个按钮里 **启动是亮蓝色主按钮、停止是灰的**。
-
-实测 2026-10-12（`python -m neo.console_server mock 28210`，Edge 无头截图 1500x120，
-`/neo/status` 回 `state=running`、`healthy=true`、`loaded=true`）：
-
-- `neo/web/style.css` 里**一条 `:disabled` 样式都没有** —— 按钮被禁用后长得跟能按时一模一样，
-  而 `button.primary` 的蓝色写死在"启动"上（`index.html` 里带的 class，页面从不换），
-  于是运行中的页面读起来就是"该点启动"。
-- 禁用判断本身是对的（`btn-start` 在 running/starting 时禁用，`btn-stop` 只在 idle 时禁用），
-  纯样式问题。
-
-修法：主按钮的蓝色跟着"此刻能按的那个"走 —— `app.js` 的 `render()` 里
-`running / starting / stopping / external` 时点亮**停止**，停着时点亮**启动**；
-`style.css` 补 `button:disabled`（`opacity .42` + `not-allowed`）与
-`button.primary:disabled`（退回灰底、灰字），禁用一眼看得出来。
-
-修完实测（同一探针、同一截图尺寸）：`state=running` 时右上角是**停止**亮蓝、**启动**发灰。
-
-回归测试：`test_ui.py` 的 `TestHeaderActionButtons`（3 个）—— CSS 里要有 `button:disabled` 与
-`button.primary:disabled`；`btn-start` / `btn-stop` 两个都要 `toggle("primary")`；
-`btn-stop` 的禁用条件里不许出现 `running` / `external` / `stopping`（在跑就该能停）。
-
-## 模型页的"启动它"：跑着的时候点它会发生什么
-
-用户问：模型列表里的"启动它"，是不是要等服务停止了才能按？
-
-**不用先停。** `set_model`（`neo/supervisor.py:156`）就是"记下新模型 + `stop()` + `start()`"——
-Neo 自己把当前服务停掉、用新模型重新起。实测 2026-10-12（mock 真进程，
-`neo/tests/test_supervisor.py` 的 `TestSetModel`）：running 时调用它，进程号换了、状态回到
-running，`last_exit` 是空的 —— 用户主动换模型不算一次非预期退出，状态页的「上次退出」那一行
-不会因此亮起。
-
-代价是**正在跑的请求会被切断**（`stop()` 给完优雅退出窗口就杀整个子进程树）。以前按钮只写
-"启动它"，跑着和停着长得一模一样，看不出点下去会发生什么。现在写清楚：
-
-- 当前模型：按钮"正在用"，禁用；
-- 服务在跑（running / starting / stopping / external）：按钮"换过去"，
-  鼠标上去是"会先停掉当前服务（正在跑的请求会被切断），再用「模型名」重新起"；
-- 停着：按钮"启动它"，提示"用「模型名」起服务"；模型文件不在的一律禁用。
-
-回归测试：`test_ui.py` 的 `TestModelPageSwitch`（4 个）与 `test_supervisor.py` 的 `TestSetModel`（1 个）。
-
-## 打成 exe（`NeoStrata.exe`）
-
-```
-python -m pip install pyinstaller      # 只在打包时用，用户那边不用装
-python -m neo.build_exe                # 打出来放在仓库根：NeoStrata.exe
+python -m pip install pyinstaller      # only needed when packaging; users don't install it
+python -m neo.build_exe                # produces NeoStrata.exe
 python -m neo.build_exe --dest D:\Work\Strata
 ```
 
-按 `neo/NeoStrata.spec` 打一个单文件 exe，**设计成放进 Strata 的根目录双击就跑**。
-实测 2026-10-12 在 Windows 11 / Python 3.13.15 / PyInstaller 6.22.3：**16.8 MB**；双击后
-出窗口（标题 Neo Strata）、`Responding=True`、`/neo/status` 到 `state=running`
-（`served_model=qwen3.8-flash-next`）、`neo/state/instance.json` 里 `mode="window"`。
+One single-file exe from `neo/NeoStrata.spec`, **designed to be dropped into the Strata root directory
+and double-clicked**. Measured 2026-10-12 on Windows 11 / Python 3.13.15 / PyInstaller 6.22.3:
+**16.8 MB**; after double-click the window appears (title Neo Strata), `Responding=True`,
+`/neo/status` reaches `state=running` (`served_model=qwen3.8-flash-next`), and
+`neo/state/instance.json` records `mode="window"`.
 
-- **exe 的"根目录"就是 exe 自己所在的目录**（`neo/manager.py` 的 `default_root()`；源码跑时是
-  `neo/` 的上一层）。状态、日志、窗口几何都落在 `<根目录>\neo\state\`
-  （exe 在不可写目录里时退到 `%APPDATA%\Neo Strata`，`state.py` 的 `pick_state_dir()`）。
-- **exe 里不打模型、不打引擎、不打 torch / numpy**：Neo 只是用命令行参数启动
-  `serve/server.py`（`neo/engines/strata.py`），模型、引擎、`.venv` 都在 Strata 那边。
-  打进来只会让 exe 变大、版本对不上。
-- **exe 里打 pywebview 与它的 WinForms 后端**（spec 里的 `collect_submodules("webview")`：
-  pywebview 按平台在运行时挑后端，这些导入 PyInstaller 看不见）和控制台页面 `neo/web/`
-  （运行时从解包目录读，`paths.web_dir()`）。
-- **打包环境缺包就拒绝打包，缺的一次报全**（`build_exe.missing_build_deps()`）：缺 pywebview 时
-  `collect_submodules("webview")` 是空列表，PyInstaller 一声不响地打成功，出来的 exe 没有窗口。
-  实测 2026-10-12 19:58 部署的 exe 自己的日志：`pywebview 不可用（No module named 'webview'），退回浏览器界面`
-  —— 用户那边看不到任何界面。以前一关一关拦，在两个包都没装的环境里（部署树的 `.venv` 就是这样）
-  报的那句话里连 pywebview 都不出现，装完 pyinstaller 还要再撞一次；现在一条话里列齐缺的包和各自的装法
-  （`python -m pip install -r neo/requirements-neo.txt`）；确实只要浏览器界面就加 `--no-webview`。
-  实测两种打包：装了 pywebview **13.2 MB**（`webview.*` 73 个模块进包，含
-  `webview.platforms.edgechromium` 与 `winforms`），没装 **8.8 MB**。
-- **页面脚本体检不过就拒绝出包**（`build_exe.web_gate()` → `neo/webcheck.py`）：页面是这个 exe
-  的全部界面，而逐文件的语法检查看不见跨文件重名。实测 2026-10-13 部署的 exe（13,981,433 字节）
-  就是打成功、装出去、界面是死的（见「窗口上任何点击都没反应、状态永远「未启动」」）。现在
-  `python -m neo.build_exe` 在调 PyInstaller 之前先体检 `neo/web/`，不干净就报出是哪两个文件的
-  哪两行撞了哪个名字，并让人先跑 `python -m neo.webcheck`。
-- **exe 是窗口版（`console=False`），没有控制台**：QuickEdit 那条路直接绕开（见"怎么起来"）。
-  窗口版里 `sys.stdout` / `sys.stderr` 是 `None`，`console_io.NullStream` 接住它们，
-  所有输出走 `neo/state/logs/manager.log`。
-- **exe 需要 Strata 的 `.venv`**：打包后 `sys.executable` 就是 `NeoStrata.exe` 自己，拿它当
-  "Python"等于让 Neo 一遍遍启动 Neo 自己。所以 `state.py` 的 `python_executable()` 在 exe 里
-  只认 `<根目录>\.venv\Scripts\python.exe` 和系统里的 `python`，都没有就报一句
-  "没找到跑 Strata 用的 Python：这个 exe 需要 Strata 目录里的 .venv —— 在 Strata 目录跑一次
-  START-HERE.bat 就有了"。
-- 入口是 `neo/neo_entry.py`：`neo/manager.py` 顶部是包内相对导入，PyInstaller 把包里的模块当
-  顶层脚本分析时认不出父包，那些导入会被标成"找不到模块"，所以给一个显式 import 包的脚本，
-  `pathex` 指到仓库根。
-- **结束进程时它是两个进程**：PyInstaller 的单文件 exe 先跑引导进程，解包后再启动应用进程。
-  实测 2026-10-12：`Stop-Process` 结束引导进程（pid 42780）后应用进程（pid 26312）还在，
-  服务端口 28180 与控制台 28183 都还开着；结束应用进程后两个端口都关了。Neo 的 Job Object
-  管的是 Neo 起的 Strata 服务，管不到这对父子。关窗口（或在窗口里点"停止"再关）走 `atexit`，
-  两个进程都会退；在任务管理器里结束，请把两个 `NeoStrata.exe` 都结束。
-- 打包产物（`NeoStrata.exe`、`neo/dist/`、`neo/build/`）不进仓库（`neo/.gitignore`）。
+- **The exe's "root directory" is the directory the exe itself sits in** (`default_root()` in
+  `neo/manager.py`; when running from source it is the directory above `neo/`). State, logs and window
+  geometry all land in `<root>\neo\state\` (when the exe sits in a non-writable directory it falls back
+  to `%APPDATA%\Neo Strata` — `pick_state_dir()` in `state.py`).
+- **The exe carries no models, no engine, no torch / numpy**: Neo only starts `serve/server.py` with
+  command-line arguments (`neo/engines/strata.py`); models, engine and `.venv` all live on the Strata
+  side. Bundling them only makes the exe bigger and the versions mismatched.
+- **The exe does carry pywebview and its WinForms backend** (`collect_submodules("webview")` in the
+  spec: pywebview picks its backend by platform at runtime, and PyInstaller cannot see those imports)
+  and the console pages `neo/web/` (read from the unpack directory at runtime, `paths.web_dir()`).
+- **If the build environment is missing packages, packaging is refused and every missing package is
+  reported at once** (`build_exe.missing_build_deps()`): with pywebview missing,
+  `collect_submodules("webview")` is an empty list, PyInstaller silently succeeds, and the resulting
+  exe has no window. Measured from the deployed exe's own log on 2026-10-12 19:58:
+  `pywebview unavailable (No module named 'webview'), falling back to the browser interface` — the user
+  sees no interface at all. The gate used to stop one package at a time, so in an environment with
+  neither package installed (the deploy tree's `.venv` is exactly that) the message did not even mention
+  pywebview, and you hit it again after installing pyinstaller; now one message lists every missing
+  package with its install command (`python -m pip install -r neo/requirements-neo.txt`); if you really
+  only want the browser interface, pass `--no-webview`. Measured both builds: with pywebview
+  **13.2 MB** (73 `webview.*` modules bundled, including `webview.platforms.edgechromium` and
+  `winforms`), without it **8.8 MB**.
+- **If the page-script check fails, no package is produced** (`build_exe.web_gate()` →
+  `neo/webcheck.py`): the pages are this exe's entire interface, and per-file syntax checks cannot see
+  cross-file name collisions. Measured 2026-10-13: the deployed exe (13,981,433 bytes) was built
+  successfully, installed, and its interface was dead (see "Every click was dead and the status stayed
+  'Not started'"). Now `python -m neo.build_exe` checks `neo/web/` before invoking PyInstaller, and when
+  it is not clean it names the two files, the two lines and the colliding name, and tells you to run
+  `python -m neo.webcheck` first.
+- **The exe is the windowed build (`console=False`), it has no console**: the QuickEdit path is bypassed
+  entirely (see "How it starts"). In the windowed build `sys.stdout` / `sys.stderr` are `None`;
+  `console_io.NullStream` catches them and all output goes to `neo/state/logs/manager.log`.
+- **The exe needs Strata's `.venv`**: after packaging, `sys.executable` *is* `NeoStrata.exe`, so using
+  it as "Python" means Neo keeps launching Neo itself. `python_executable()` in `state.py` therefore
+  only accepts `<root>\.venv\Scripts\python.exe` and a system `python` inside the exe, and if neither
+  exists it prints one line: "no Python found for running Strata: this exe needs the .venv in the Strata
+  directory — run START-HERE.bat once in the Strata directory".
+- The entry point is `neo/neo_entry.py`: the top of `neo/manager.py` uses intra-package relative
+  imports, and when PyInstaller analyses a module inside the package as a top-level script it cannot
+  resolve the parent package, so those imports get flagged "module not found"; hence an explicit script
+  that imports the package, with `pathex` pointing at the repo root.
+- **Killing it means killing two processes**: a PyInstaller single-file exe runs a bootloader process
+  first, then starts the application process after unpacking. Measured 2026-10-12: after `Stop-Process`
+  killed the bootloader (pid 42780) the application process (pid 26312) was still there, with service
+  port 28180 and console port 28183 both open; killing the application process closed both ports. Neo's
+  Job Object governs the Strata service Neo started, not this parent-child pair. Closing the window (or
+  pressing "Stop" in the window and then closing) goes through `atexit` and both processes exit; if you
+  kill it in Task Manager, kill both `NeoStrata.exe` entries.
+- Packaging artifacts (`NeoStrata.exe`, `neo/dist/`, `neo/build/`) are not in the repository
+  (`neo/.gitignore`).
 
-## 部署树：Neo 不改上游（`D:\Work\Strata`）
+## The deploy tree: Neo never changes upstream (`D:\Work\Strata`)
 
-部署的那棵树是**上游 Strata 仓库的一个 checkout**（`origin` = `github.com/Niko1221/Strata`；
-2026-10-13 在 v0.1.43 / `7695859a`），不是开发仓库。规矩：
+The tree that gets deployed is **a checkout of the upstream Strata repository** (`origin` =
+`github.com/Niko1221/Strata`; measured 2026-10-13 at v0.1.43 / `7695859a`), not the development repo.
+The rules:
 
-- **不在部署树里提交任何东西**，也不给它的 `origin` 加第二个远端 —— 上游更新要能直接 `git pull`。
-- **Neo 不改上游文件**。Neo 带去的东西全是未跟踪的：`NeoStrata.exe`、`neo/`、`NEO-START.bat`。
-  部署时 `neo/deploy.py` 把这三条加上 `strata/`（引擎源码树）和 `strata-*.json.bak`（上游
-  `setup.py` 在用户机器上留下的模型配置备份 —— 上游的 `.gitignore` 只写到 `/strata-*.json`，
-  以 `.json` 结尾的模式匹配不到 `.json.bak`）写进部署树的
-  `.git/info/exclude` —— 那是 git 的本地忽略文件，不在任何提交里，所以 `git status` 只看得到上游的
-  东西，而 Neo 一个跟踪文件都没动（上游的 `.gitignore` 是跟踪文件，不碰）。
-  2026-10-13 撤掉了先前打在 `serve/server.py` 上的本机豁免补丁（旧文件备份在
-  `neo/state/backups/server.py.v0.1.43.neo-patched.bak`，393,602 字节），上游文件恢复原样
-  （391,688 字节）。撤补丁留下的缺口由 Neo 自己补：监控页改走 `/strata/` 只读通道（见"token 管到哪"）。
-- 判据：`git -C D:\Work\Strata status --short --untracked-files=no` 里**没有已修改的跟踪文件**
-  （Neo 的文件按设计就是 untracked，不能算成"脏"，`neo/engine_setup.py` 的
-  `git_dirty(..., tracked_only=True)` 就是为这一条加的）；
-  `git rev-list --count HEAD..origin/main` 与 `origin/main..HEAD` 是 **33 与 0** —— 拉取是纯快进。
-- **换版用 `python -m neo.deploy --to D:\Work\Strata`**（默认 dry-run，加 `--apply` 才写）。
-  三道闸门，过不了什么都不写：① 引擎 —— 部署树的 HEAD 要等于 `neo/engine_ref.json` 的 pin
-  且跟踪文件干净；② 路径 —— 只写 Neo 清单里的东西（`neo/**`、`NEO-START.bat`、`NeoStrata.exe`），
-  `neo/state/`、`__pycache__/`、`build/`、`dist/` 不带走；③ 进程 —— 部署树里的 `NeoStrata.exe`
-  在跑就拒绝（文件被锁着，写了也是半个）。写完逐文件核对 SHA-256，再就地跑
-  `python -m neo.webcheck` 与快套件。2026-10-13 第一次真跑（dry-run，`--no-tests`）：
-  引擎闸门 OK（HEAD `a0116b2782a5` == pin），进程闸门被 `instance.json` 记的 pid 7276 挡住，
-  清单是 new 7、same 26、update 30，并当场报出部署树里多出来的一个 `neo/test_ui.py`
-  （旧同步留下的，`--prune` 会删）—— 只同步 `.py` 漏掉 `neo/web/` 那一类坑就是这么露出来的。
-- **控制台打印**：打印中文的命令行 `main()` 先调 `wide_stdout()`（共用那一份在 `neo/cli.py`），
-  把 stdout 改成 UTF-8（`errors="replace"`）。2026-10-13 实测：`python -m neo.engine_setup --ensure`
-  在 cp936 控制台上崩在打印那一步（`UnicodeEncodeError: 'gbk' codec can't encode character '\ufffd'`）——
-  git 的输出按 UTF-8 解，解出来的替换字符 `U+FFFD` 是 GBK 编码不了的。现在这两条 CLI 在 cp936 控制台上
-  把那一行打成 `git : fatal: ...`，退出码 1，不再崩。
-  同一天量到第二种：输出进管道（`| Select-Object`、重定向进文件、测试里捕获）时 `sys.stdout.encoding`
-  从控制台的 65001 回落到 locale 的 gbk，写出去的是 GBK 字节，按 UTF-8 读的那一头整片是乱码
-  （`python -m neo.wizard --check` 直接跑在控制台里是好的，加管道就花；同一条命令 `-X utf8` 是好的）。
-  2026-10-13 起 `wizard` / `models` / `model_settings` / `connect` / `start` 的 `main()` 也调它，
-  `neo/tests/test_deploy.py::TestWideStdoutShared` 钉"七个命令行是同一个函数、`cli.py` 里只有一份
-  `reconfigure`"，`neo/tests/test_model_settings.py::TestCliRootAndConsole` 在 cp936 的字节控制台里
-  跑一遍 `main()`，读回来必须是 UTF-8 的中文。
-- **部署 = 换 `NeoStrata.exe` + 同步 `neo/` 的源码与页面**。exe 里打的是开发树的 `neo/`；
-  在部署树里跑源码（`python -m neo.manager`、`python -m neo.models`、跑测试）用的是部署树的 `neo/`，
-  两边都要跟上。2026-10-13 实测踩过这个坑：只同步 `.py`、没同步 `neo/web/`，部署树的源码版页面
-  就还是 `t` / `applyLang` 撞名那个死界面 —— `python -m neo.webcheck` 在部署树当场报出来。
-  同步后部署树 `python -m neo.webcheck` 干净、快套件 326 个测试全过（用它自己的 `.venv`）。
-- 打包中间产物（`neo/build/`、`neo/dist/`）不进部署树。
+- **Nothing is ever committed in the deploy tree**, and no second remote is added to its `origin` —
+  upstream updates must stay a plain `git pull`.
+- **Neo never modifies upstream files.** Everything Neo brings along is untracked: `NeoStrata.exe`,
+  `neo/`, `NEO-START.bat`. At deploy time `neo/deploy.py` appends those three plus `strata/` (the
+  engine source tree) and `strata-*.json.bak` (the model-config backups upstream's `setup.py` leaves on
+  the user's machine — upstream's `.gitignore` only goes as far as `/strata-*.json`, and a pattern
+  ending in `.json` does not match `.json.bak`) to the deploy tree's `.git/info/exclude` — git's local
+  ignore file, part of no commit — so `git status` only ever shows upstream's own files, and Neo has
+  touched no tracked file (upstream's `.gitignore` is a tracked file, hands off). On 2026-10-13 the
+  local exemption patch previously applied to `serve/server.py` was removed (the old file is backed up
+  in `neo/state/backups/server.py.v0.1.43.neo-patched.bak`, 393,602 bytes) and the upstream file
+  restored (391,688 bytes). The gap left by removing the patch is filled by Neo itself: the monitor page
+  now reads through the `/strata/` read-only channel (see "What the token covers").
+- The check: `git -C D:\Work\Strata status --short --untracked-files=no` shows **no modified tracked
+  files** (Neo's files are untracked by design and must not count as "dirty" — `git_dirty(...,
+  tracked_only=True)` in `neo/engine_setup.py` exists for exactly this);
+  `git rev-list --count HEAD..origin/main` and `origin/main..HEAD` are **33 and 0** — the pull is a pure
+  fast-forward.
+- **Version changes go through `python -m neo.deploy --to D:\Work\Strata`** (dry-run by default, `--apply`
+  writes). Three gates, and if any fails nothing is written: ① engine — the deploy tree's HEAD must
+  equal the pin in `neo/engine_ref.json` and tracked files must be clean; ② paths — only what is on
+  Neo's manifest is written (`neo/**`, `NEO-START.bat`, `NeoStrata.exe`); `neo/state/`, `__pycache__/`,
+  `build/`, `dist/` are not carried over; ③ process — if `NeoStrata.exe` from the deploy tree is
+  running, refuse (the files are locked, a write would land half-done). After writing, every file's
+  SHA-256 is verified, then `python -m neo.webcheck` and the quick suite run right there. First real
+  run 2026-10-13 (dry-run, `--no-tests`): engine gate OK (HEAD `a0116b2782a5` == pin), process gate
+  blocked by the pid 7276 recorded in `instance.json`, manifest new 7 / same 26 / update 30, and it
+  reported an extra `neo/test_ui.py` sitting in the deploy tree (left by an old sync, `--prune` would
+  delete it) — the trap of "only `.py` synced, `neo/web/` missed" is exactly how it surfaced.
+- **Deploying = swapping `NeoStrata.exe` + syncing `neo/`'s source and pages**. The exe bundles the
+  development tree's `neo/`; running source in the deploy tree (`python -m neo.manager`,
+  `python -m neo.models`, running tests) uses the deploy tree's `neo/`, so both must be kept current.
+  Measured 2026-10-13, this trap was hit: only `.py` was synced and `neo/web/` was not, so the deploy
+  tree's source-run pages were still the dead interface with the `t` / `applyLang` collision —
+  `python -m neo.webcheck` reported it on the spot in the deploy tree. After syncing,
+  `python -m neo.webcheck` in the deploy tree is clean and the quick suite passes all 326 tests (using
+  its own `.venv`).
+- Packaging intermediates (`neo/build/`, `neo/dist/`) never enter the deploy tree.
+- **Console printing**: any CLI `main()` that prints Chinese calls `wide_stdout()` first (the one shared
+  copy lives in `neo/cli.py`), reconfiguring stdout to UTF-8 (`errors="replace"`). Measured 2026-10-13:
+  `python -m neo.engine_setup --ensure` crashed at the print step on a cp936 console
+  (`UnicodeEncodeError: 'gbk' codec can't encode character '\ufffd'`) — git's output decoded as UTF-8
+  yields the replacement character `U+FFFD`, which GBK cannot encode. Now those CLIs print that line as
+  `git : fatal: ...` on a cp936 console and exit 1, without crashing. Measured the same day, a second
+  mode: when output goes into a pipe (`| Select-Object`, redirect to a file, capture in tests)
+  `sys.stdout.encoding` falls back from the console's 65001 to the locale's gbk, GBK bytes are written,
+  and the side reading as UTF-8 sees mojibake (`python -m neo.wizard --check` is fine in the console and
+  garbled behind a pipe; the same command with `-X utf8` is fine). Since 2026-10-13 the `main()` of
+  `wizard` / `models` / `model_settings` / `connect` / `start` calls it too;
+  `neo/tests/test_deploy.py::TestWideStdoutShared` pins "the seven CLIs share the same function, and
+  there is exactly one `reconfigure` in `cli.py`", and
+  `neo/tests/test_model_settings.py::TestCliRootAndConsole` runs `main()` on a cp936 byte console and
+  requires the text read back to be UTF-8 Chinese.
 
-### 换版怎么走（`neo/deploy.py` 的命令行）
-
-```
-python -m neo.deploy --to D:\Work\Strata                      # 只看计划，一个文件都不写
-python -m neo.deploy --to D:\Work\Strata --json               # 同一份计划，给机器读
-python -m neo.deploy --to D:\Work\Strata --no-tests           # 计划里不算跑测试那一步
-python -m neo.deploy --to D:\Work\Strata --apply              # 真写
-python -m neo.deploy --to D:\Work\Strata --apply --prune      # 真写，并删掉目标里源里没有的 Neo 文件
-# 别的开关：--from <开发树>（默认脚本所在的仓库根）、--exe <NeoStrata.exe>、--ref <engine_ref.json>
-```
-
-顺序是固定的四步，每一步都要看清输出再走下一步：
-
-1. **dry-run**：`--to <部署树>`。看三道闸门过没过、清单里 new / update / same 各多少、
-   目标里多出来的文件是哪些、`.git/info/exclude` 里还缺哪几行。这一步不写任何东西，
-   退出码非 0 就是闸门没过。
-2. **停掉在跑的 exe**：进程闸门认两样 —— `neo/state/instance.json` 里记的 pid，和 Windows
-   进程表里镜像路径落在这棵部署树里的 `NeoStrata.exe`。文件被进程锁着的时候写进去就是半个 exe，
-   所以这一条不能绕。关掉窗口（或 `taskkill /PID <pid> /T /F`）再走下一步。
-3. **`--apply`**：每个文件先写同目录的临时文件、核对 SHA-256、再 `os.replace` 换上去；
-   缺的忽略行追加进 `.git/info/exclude`（只追加、不重复，dry-run 只报不写）；
-   写完把整份清单再核一遍摘要，并**在部署树里**跑 `python -m neo.webcheck` 与快套件
-   （`--no-tests` 只跳过测试那一步，webcheck 不跳）。
-4. **事后检查**：部署树里 `python -m neo.webcheck`、快套件、`git -C <部署树> rev-parse HEAD`
-   等于 pin、打开窗口看「接入」页的引擎卡。
-
-`--apply` 之前闸门必须全绿，脚本不看"用户说没事"。目标树没有 git、HEAD 不是 pin、
-跟踪文件被改过、exe 在跑 —— 四种情况都是**一个字节都不写**并说清是哪一道。
-
-## 测试
+### The version-change walk (`neo/deploy.py` on the command line)
 
 ```
-python -m neo.tests.run_all --quick --skip-network   # 开发时：十七个模块，9.6 秒
-python -m neo.tests.run_all                          # 换版前：二十个模块，含克隆那条
-python -m neo.tests.run_all --no-split --jobs 1      # 老用法：按模块串行
+python -m neo.deploy --to D:\Work\Strata                      # plan only, writes nothing
+python -m neo.deploy --to D:\Work\Strata --json               # the same plan, for machines to read
+python -m neo.deploy --to D:\Work\Strata --no-tests           # plan without the test step
+python -m neo.deploy --to D:\Work\Strata --apply              # really write
+python -m neo.deploy --to D:\Work\Strata --apply --prune      # really write, and delete Neo files in the target that the source no longer has
+# other switches: --from <dev tree> (default: the repo root the script sits in), --exe <NeoStrata.exe>, --ref <engine_ref.json>
 ```
 
-523 个测试（Windows 11，Python 3.13.15，起真实进程，不需要 GPU、不需要装好的模型、不碰真实用户配置；
-唯一真联网的是 `test_engine_setup.TestRunAndPage` 那条克隆路径）。跑法是 `python -m neo.tests.run_all`：
-它把每个模块切成测试类、按类并行（默认 4 个并发）、每个类报秒数，并把失败的类单独重跑一次——并发下的
-端口/负载抖动要和真失败分开。**时间标准（2026-10-13）：跑测试必须报时间，单元与套件的墙上时间都按 30 秒
-封顶**——`run_all.py` 里的 `BUDGET_S` 就是这条标准，`--timeout` 的默认值是它，超预算的单元报
-`OK(超预算)`、整跑判失败；超过 30 秒要优化，不是把超时调大。2026-10-13 本机实测（删掉退避重启之后，
-同一台机器）：**`--quick --skip-network` 墙上 9.6 秒 / 435 个用例 / 86 个单元**，**`--skip-network`
-墙上 17.1 秒 / 523 个用例 / 101 个单元**（最慢的两个单元 5.7 秒 `test_models.TestCatalog` 与
-5.1 秒 `test_supervisor.TestCrashStops`；删退避之前最慢的是 `TestCrashRestart` 14.7 秒 —— 杀四次进程、
-走完整条退避，全跑 18.3 秒）。同样的单元串行相加是 66.1 秒，而 19 个模块一条 `python -m unittest`
-跑是 1067.1 秒 = 17.8 分钟（492 个测试，
-这是并行之前的数）。`--skip-network` 摘掉的那条克隆路径在同一台机器同一天量到 6.8 秒与 145.3 秒——它跟着
-链路走，30 秒的标准下全跑就摘掉它，要看那条就单独跑那一类并放宽 `--timeout`。
+The order is a fixed four steps, and you read each step's output before taking the next:
 
-引擎的真服务起不动时（引擎根目录的 `.venv` 没装上游的包），用真 `serve/server.py` 的那几条自己跳过并
-说清缺哪个包：`_bootstrap.py::server_ready` 用 ast 读它的 import，毫秒级、不起进程。实测 2026-10-13：
-缺 `jinja2` 时那个进程 import 就死，监督器按退避一遍遍重启、测试把等待跑满，全跑从 18.3 秒变成 5 分钟；
-`test_harness.py` 钉着这条跳过规则与上面的时间标准。
+1. **dry-run**: `--to <deploy tree>`. Check the three gates, how many new / update / same entries the
+   manifest has, which files the target has extra, and which lines are missing from
+   `.git/info/exclude`. This step writes nothing; a non-zero exit code means a gate failed.
+2. **stop the running exe**: the process gate looks at two things — the pid recorded in
+   `neo/state/instance.json`, and any `NeoStrata.exe` in the Windows process table whose image path
+   lands inside this deploy tree. Writing while a process holds the files locked produces a half exe, so
+   this gate cannot be bypassed. Close the window (or `taskkill /PID <pid> /T /F`) and continue.
+3. **`--apply`**: each file is written to a temp file in the same directory, its SHA-256 verified, then
+   swapped in with `os.replace`; missing ignore lines are appended to `.git/info/exclude` (append only,
+   never duplicated; dry-run only reports); after writing, the whole manifest's digests are verified
+   again, and `python -m neo.webcheck` plus the quick suite run **inside the deploy tree** (`--no-tests`
+   skips only the tests, never webcheck).
+4. **afterwards**: `python -m neo.webcheck` in the deploy tree, the quick suite,
+   `git -C <deploy tree> rev-parse HEAD` equals the pin, and open the window to look at the engine card
+   on the Connect page.
 
-监督器的测试驱动 `neo/tests/mock_server.py`（stdlib 小服务，按 Neo 读的形状答 `/health` 与 `/metrics`），
-作为真子进程跑在真端口上：启动、就绪、杀掉、停着并给出诊断、点启动再起全是真的。起进程 0.27 秒，
-`serve/server.py --engine mock` 也是 0.27 秒，小服务省掉的是"第一次答 `/health`"要的那 3.5 秒。
-`TestStartAndReady.test_start_to_running` 用真的 `serve/server.py --engine mock`：要验的是"上游的就绪行
-真的进了日志"，那是 Neo 与上游的接缝，不能让假服务替它作证。
+All gates must be green before `--apply`; the script does not accept "the user says it's fine". A target
+tree with no git, a HEAD that is not the pin, modified tracked files, an exe running — all four cases
+write **not one byte** and say which gate stopped it.
 
-开销全在起真进程与建真 git 树的模块上。合起来比各自相加慢，慢在哪也量了（2026-10-13，同一台机器）：
-`test_engine_setup` 与 `test_deploy` 各自单跑是 8.4 与 5.0 秒，在全量套件里是十几分钟 —— 它们每个用例在
-临时目录里 `git init` + 一次提交造真树，Windows Defender 扫临时目录时一次 `git init` 要几十秒。
-所以这两条在开发时走快套件，全量套件留给换版前跑一次。两处实测改掉的等法（2026-10-13）：
-`neo_console_info` 先摸一次 TCP（0.05 秒）再发那个 HTTP 请求，没人听的端口不再等满 0.8 秒超时；
-控制台线程 `serve_forever(poll_interval=0.05)`，`stop()` 从 0.51 秒到 0.06 秒。监督器测试里
-`poll_s` 0.25→0.05、`probe_s` 0.4→0.1、`wait()` 每 0.05 秒问一次，等的是条件不是秒数：
-`test_connect_api` 39.6→6.7 秒、`test_console` 34.7→9.1 秒、`test_supervisor` 70.3→56 秒。
-再往下是这一轮的两件事（2026-10-13，见上面「监督器的行为」）：探活按 `probe_s` 限速 + TCP 超时
-1.2→0.25 秒，被监督的进程换成 `neo/tests/mock_server.py`。按类并行后最慢的两个类：
-`TestCrashRestart` 29.3→**7.0** 秒、`TestExternalService` 42 秒（并发下偶发失败）→**2.6** 秒——
-删掉一个用例都没用，慢的是"发现进程死了"要等一轮探活跑完。
-（这一格后来改成了 `TestCrashStops`：退避删了之后 5.1 秒。慢的原因也顺手修了——`_wake` 是
-set 一次就一直在的，盯端口那一层的 `_sleep` 于是立刻返回，那一层变成一边忙等一边反复探活，
-监督线程占着 GIL，测试里状态页的轮询都被拖慢；`_sleep` 醒来把标记收回去，同一格从 12.2 秒到
-5.0 秒，2026-10-13 本机实测。）
+## Tests: `python -m neo.tests.run_all`
 
-- `test_supervisor`：启动到就绪、事件记录、非预期退出后**不自动重启**（记下退出码 + 一句诊断 +
-  事件里写"已停止，点「启动」重新起"）、崩了停着之后点「启动」真的再起一个进程、用户停止后不被
-  拉起、接手已在运行的服务、诊断关键词、
-  **状态页的 metrics 真是数字**（真进程：`requests` 是累计条数，值里不许有列表/对象）。
-- `test_engines`：配置发现与排序（`setup.py` 的 `touch()` 语义）、启动命令只用上游已有参数、
-  模型文件缺失拒绝启动、没有配置时的引导态、mock 适配器；**真实配置的形状**（扁平 `args`、模型在
-  `--native`、上下文在 `--max-context`、没有 `path` 键）、**模型在而引擎 exe 不在要标出来并拒绝启动**、
-  没点名时挑一个能启动的配置；**`/metrics` 的四节压成卡片键**（`TestMetricsFlatten` 吃真应答载荷：
-  显存 24028 / 24455 MiB、内存 70.6 / 93.6 GB、`requests` 是 1 不是列表、空闲时不编一个生成速度）；
-  **监控页地址走控制台**（`test_pages_monitor_goes_through_the_console`：给了 `console_port` 时
-  `pages["monitor"]` 是 `http://<host>:<console>/strata/#monitor`，没给时直连上游；聊天页永远直连上游）。
-- `test_upstream_api`：Neo 用到的 `serve/server.py` 参数（`--engine/--config/--port/--host/
-  --api-key/--gpu`）、`/health` 的字段、`/metrics` 的**四节与里面的键**（`live` / `totals` /
-  `hardware` / `hardware_static`，以及 `serve/telemetry.py` 的 `cpu` / `ram_used` / `mem_used`）、
-  聊天页与监控页文件、`setup.py` 的 M2 参数、
-  上游 `requirements.txt` 未被改动。上游改名时这条测试会先响，而不是等用户的 Neo 起不来。
-  **`test_the_monitor_channel_needs_no_upstream_change` 盯的是反过来的事**：`serve/server.py` 里不许出现
-  本机豁免补丁的标记（`loopback_peer`、`_authorized(self, monitor: bool = False)`、`_authorized(monitor=True)`），
-  而监控页与那些只读端点必须还在 —— 监控页靠 Neo 的 `/strata/` 通道读数据，不靠改上游。
-- `test_console`：状态接口、静态页 no-store、起不来的引擎停着并给出原因（不自动重启）、外站 Origin 与外站 Host 403、
-  设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
-  没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
-  浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）；
-  **模型设置那组**（`TestModelSettingsEndpoint`，10 个）：`GET /neo/model/settings` 的表单形状、
-  `?model=` 认 id 也认文件名、没点名用第一个配置、点了名找不到就列清单且**不写盘**、
-  `POST` 按 `app.js` 发的那份表单写覆盖配置（`--max-context` 与 `--vision` 成、`--kv-resident` 不成对时
-  被删）、越界回 `ok:false` 加说明且**配置字节未动**、`action:"reset"` 删掉覆盖配置且上游那份未动、
-  改了要重启的东西回 `restart_required` 并带 pid；**`/strata/` 只读通道那组**（`TestStrataChannel`，9 个，
-  用一台假上游）：页面与它的 js/css 都转得到、面板端点靠 Neo 在服务端附的 key 答上且应答里不带 key、
-  查询串原样带过去、`POST` 一律 405、`/v1/chat/completions` 不转、白名单外的路径不转、上游没起来回 502、
-  `/strata` 不遮 Neo 自己的 `/neo/*`、通道用的路径常量与 `engines/base.py` 给的监控页地址一致。
-- `test_ui`（65 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
-  没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
-  才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
-  `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
-  `window_kwargs()` 里没有 `js_api`（有坐标才写 `x`/`y`）、`app.js` 代码里不出现
-  `window.pywebview` 且带 `/neo/open`、`/neo/open-log` 两条路由；**`app.js` 的花括号配平且
-  `render`/`poll`/`ensureFrame`/`num`/`count` 在顶层、末尾的 `poll();` 与 `setInterval(poll, 2000);`
-  在顶层**（内嵌框停在 `about:blank` 的那次实测就是被吞进函数体）；**状态页六张卡片只经过
-  `num()` / `count()`**（`m.requests` 这类不许直接嵌进模板串，`count()` 对列表与对象回"—"）；
-  **打包环境缺包时
-  `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`，
-  两个包都缺时一句话列齐（`test_build_names_every_missing_dep_at_once` —— 部署树的 `.venv` 就是这种环境）；
-  **语言与主题那一组**（`TestLanguageAndTheme`，9 个）：`i18n.js` 语法配平、`BLOCKS`/`PHRASES`/`ATTRS`
-  齐且 `applyLang`/`applyTheme`/`init` 在顶层、`index.html` 里每一个 `data-i18n` 键在 `BLOCKS` 里
-  （漏一个键那块文字就永远不换）、`data-i18n` 不包着控件（包着就把下拉框与按钮抹了）、
-  `app.js` 里每个 `t("中文")` 字面量在 `PHRASES` 里、HTML 里的中文 `placeholder`/`title` 在 `ATTRS` 里、
-  顶栏两个按钮与 `.nav-prefs` 在 HTML 与 CSS 里、**`:root` 与 `html[data-theme="light"]` 之外的规则里
-  不许出现硬编码颜色**（有一条组件规则写死了 `#fff`，浅色主题下它就是一块白斑）；**两个
-  `<script>` 不许在顶层声明同一个名字**（按 `index.html` 的加载顺序把顶层名字串起来查，
-  状态永远「未启动」、任何点击都没反应的那次事故就是 `t` 与 `applyLang` 撞名）。
-- `test_ui` 里的 `TestWebCheck`（8 个）：`neo/webcheck.py` 的体检与打包闸门 —— 真树体检干净时
-  `build_exe.web_gate()` 放行；拆掉 `i18n.js` 的 IIFE 后闸门拒绝出包，并点名撞的是哪两个文件的
-  哪两行；机器上有 node 时拼接后的整段交给 V8 解析、报的是浏览器那句原话（`already been declared`），
-  没 node 时不许假装跑过这一关；花括号漏一个要报、顶层的 `poll();` 与 `setInterval(poll` 都没了要报、
-  `<script>` 指的文件不在要报；顶层名字要抓到 40 个以上（不然这条检查等于没跑）。
-- `test_logging`（25 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
-  原长、清洗尾部不丢历史；`tail_text` 去 `\r` 与控制字符、行数封顶并标"已省略"；闸门在 18 亿字符灌入下
-  输出有界、说明折叠与丢弃了多少、正常输出不被改；**一次 print 的 40 行整块不被裁**（CLI 的 JSON
-  不被切成半截）、**一秒内两块 40 行第二块超出额度要丢**、500 行一次一行的洪水仍压到 120 行以内、
-  **`install()` 只包 `isatty()` 为真的流**（管道与 `StringIO` 不包）且幂等；
-  `clean_line` 行为、
-  `RecursionError` 不格式化 traceback、普通 traceback 行数与总长封顶、excepthook 装得上；
-  `RecursionError` 不格式化 traceback、普通 traceback 行数与总长封顶、excepthook 装得上；
-  `safe_resolve` 把 5000 段 `.SyncRoot` 截到 64 段以内、相对路径与 `..` 正常、`is_reparse` 对普通目录回 False；
-  `instance.json` 记下/读回/清掉、只补 `mode` 不抹 `root`、进程没了算过期。
-- `test_model_settings`（38 个）：上面那三个坑各有一条（关图片要同时删段、`--kv-resident` 连值一起删、
-  `"off"` 不算真）；外加 `view` 的表单形状（`model_id`/`config_name`/`fields`/`options`/`estimate`/
-  `overridden`/`restart_required`）、覆盖配置落在 `neo/state/configs/` 且上游那份字节未动、`clear` 后
-  回到原样、跟上游一样的键不写进覆盖配置（一样的那份被删掉）、`config_path_for` 指哪份用哪份、
-  显存估算（q4_0 16 单元 = 128 MiB、int8 同形状 = 234 MiB、关掉 KV 常驻 = 0）、GGUF 头部
-  （合成文件与真 `qwen3.8-flash-mlx-32b-ikd-q4.p1.gguf` 的 48 层、坏文件与截断文件不抛、
-  读头部不超过 1 MiB）。
-- `test_netprobe`（12 个）：注入的 `connect` 记录地址族/端口/超时，四个目标都走 443；全通建议默认源、
-  HF 断 + ModelScope 通才建议 `--source modelscope`、只有镜像通时只说 `HF_ENDPOINT` 而不换源、
-  全断时不推荐任何源；`github.com` 只进"引擎源码树通不通"那一栏，不参与模型源建议；
-  缓存读写与坏文件回空、`probe_cached` 不联网、`describe` 说得出建议。
-- `test_tokens`（16 个）：key 形状 `sk-neo-` + 32 位 hex 且 100 个不重复、掩码不含完整 key、
-  按 base 缓存命中同一个 key 且文件里存的是明文（界面只回显掩码）、`forget_key` 删了缓存、
-  环回不写防火墙提示而 `0.0.0.0` 写且带端口、`base_for` 认 `0.0.0.0`→本机地址、`looks_like_key`
-  认 `sk-neo-` 与 `sk-` 两种形状。
-- `test_connectors`（26 个）：四个 agent 的落点认 `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`XDG_CONFIG_HOME`/
-  `OPENCLAW_HOME`；**合并**（用户的 `permissions` / `[model_providers.other]` / `provider.other` /
-  `models.providers.other` 在 Neo 接线后原样在）；**幂等**（跑两遍 provider 只有一个、块里的值跟着
-  新端口变）；**先备份**（`.neo-bak` 是接线前的内容）；**坏文件不动**（截断的 JSON 报"没动你的文件"、
-  字节一模一样）；Claude 的 base **不带 `/v1`** 且 unset 列表含 `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`、
-  Codex 的 `wire_api = "responses"` 与 `requires_openai_auth = false` 与 profile 层、
-  OpenCode 的 `neo/` 前缀与 `output_limit = 32000`（window 131072）与 compaction 预留、
-  OpenClaw 的 `api = "openai-completions"` 与 `primary = neo/<id>` 与关掉 `memory.search` 和 `shellEnv`；
-  没有 key 时 unset 列表为空并给出"先建 key"的提示；PowerShell 与 POSIX 两块命令都在。
-- `test_wizard`（26 个）：命令是 `setup.py --yes --no-start` 且端口跟着传、`--no-start` 必须在
-  （服务归监督器起）、`--host 0.0.0.0` 才带 `--host` 且带 key、探测到 modelscope 才加 `--source`、
-  用户点名 hf 时不改、源在 `--yes` 之前；四步里"局域网没 key"判成未就绪、没有 `setup.py` 要说出来；
-  真跑一次（临时目录里的桩 `setup.py`）命令行与输出都落进 `logs/wizard.log`、缺 `setup.py` 时不跑。
-- `test_connect_api`（28 个）：`GET /neo/net` 不联网（吃缓存）、`GET /neo/lan` 报出绑法与掩码且
-  环回时没有防火墙提示、绑 `0.0.0.0` 时给出局域网地址与带端口的防火墙命令；`POST /neo/token`
-  生成的 key 落进 `launcher.json`、进 key 缓存、交给监督，应答里带完整 key 与掩码；
-  `{"action":"reveal"}` 原样交回**同一把**且 `launcher.json` 与 key 缓存的字节一字未动、
-  没有 key 时明说"没有 token"、对端不是本机时只给掩码（`api_key` 回空串）、
-  `unset` 清掉服务上的 key 而缓存留着、`forget` 删了缓存、坏 action 不写任何东西也不生成 key；
-  `GET /neo/connect` 四个配方齐且**不写文件**、`POST /neo/connect` 写进临时目录并留备份、
-  坏 agent 回一条说明；`GET /neo/wizard` 四步齐且带上探测建议的源；`GET /neo/catalog` 列出
-  菜单与这台机器、`POST /neo/install` 跑临时目录里那份只会打印的假 `setup.py`（命令行与输出
-  进 `wizard.log`）、菜单里没有的/盘算里跑不起来的/已经有一个在跑的都挡回来且不起子进程；
-  下载源那一排：四个选项齐、记住的源进安装命令、镜子只加 `HF_ENDPOINT` 不加 `--source`、
-  认不得的源挡回来且不写 `source.json`；`?fresh=1` 不拖住探测；**五条读接口一个文件都不写**。
-- `test_connect_cli`（8 个）：`list` 说出四个 agent 与各自的配置文件、不认识的 agent 回 2 并列出可选；
-  `--json` 出整份配方（base、env、unset 列表、命令、PowerShell 与 POSIX 两块）且**不建任何目录**、
-  给了 `--key` 就不写 key 缓存；`--base` 压过 `--host`/`--port`（写进 `config.toml` 的 `base_url`
-  用的是它）；key 来源要说出来、服务没设 key 时要提醒；`--persist` 只写临时目录里那两个文件、
-  每个都留 `.neo-bak` 且备份是用户原来那份、跑两遍 `[model_providers.neo]` 只有一块。
-- `test_paths`（30 个）：根目录那一条规则逐条钉住 —— 两个标记（`setup.py` + `serve/server.py`）都要在、
-  标记表就是 Neo 真跑的那两个文件、**引擎树不许叫 `engine/`**（那是上游放引擎二进制的目录名）、
-  `--root` 压过一切且不做标记检查、`NEO_STRATA_ROOT` 压过应用目录、应用目录有标记时压过 `<app>/strata`、
-  应用目录是空的才用 `<app>/strata`、哪都没有时回应用目录并在理由里写"这里还没有引擎"且监督器的默认值
-  照样能用、`NEO_STRATA_ROOT` 原样照用、相对路径按应用目录解析；`test_real_tree_today` 与
-  `test_manager_default_root_matches` / `test_state_root_matches` 钉住今天这台机器：新规则算出的根
-  与 `manager` / `state` 原来各自算的**逐字节相同**（exe 放进 Strata 根目录时第 3 条先命中）。
-- `test_engine_setup`（48 个）：`engine_ref.json` 的形状（缺键 / 坏 SHA / 坏 zip 摘要 / 不是字典都抛，
-  archive 地址就是那个 tag 的 zip）；`clone_argv` 是 `--depth 1 --single-branch --branch <tag>`
-  且落到 `strata/`、`checkout` 是 detach 到钉住的 SHA；`plan()` 七个状态各钉一条
-  （`clone` / `zip_copy` / `need_zip` / `not_a_git_tree` / `checkout_pin` / `dirty` / `ready`），
-  摘要对不上的 zip 算"不可用"、zip 装的树靠 Neo 自己记的那一笔算 `ready`、记的 SHA 不是 pin 就不算；
-  摘要是唯一的进门路（pin 里没有摘要时任何 zip 都不解）、解压只搬那个顶层目录并记下来历、
-  两个顶层目录的 zip 不解、目标已存在不解；`run_engine` 在脏树 / 普通目录前拒绝且**一个文件都不动**，
-  `--zip` 那条路装完并记下来历；`status()` 的形状就是页面读的；命令行 `--dry-run` 只打印命令不写文件、
-  `--json` 是 JSON、pin 读不出来说人话；`--ensure` 在 cp936 控制台上打印带 `U+FFFD` 的 git 输出不崩
-  （`wide_stdout()`）。要 git 的用例在没 git 的机器上带理由跳过。
-- `test_deploy`（29 个）：三道闸门各钉一条 —— 引擎（HEAD == pin 且干净才过；HEAD 不是 pin 挡；
-  跟踪文件脏挡；**没有 git 不算干净**；**部署树里 Neo 自己的 untracked 文件不算脏**）、
-  路径（`neo/state/`、`__pycache__/`、`build/`、`dist/` 不带走；exe 不在源码清单里；
-  每个文件分 new / update / same；目标里多出来的文件要报出来）、进程（缺 exe 挡、在跑的实例挡）；
-  dry-run 一个文件都不写；`--apply` 写完逐文件核对 SHA-256、闸门不过的树拒绝写、
-  `--prune` 只删"源里没有的 Neo 文件"；`--json` 是 JSON 且说得出闸门过没过；报告里点名闸门与计数；
-  `--to` 不给就报错；pin 与目标树对不上时挡住报告。本地忽略那一笔（`.git/info/exclude`）钉六条：
-  缺的行一次补齐、第二次一个字节都不动（不重复）、dry-run 只报不写、目标不是 git 检出就说"没有可写的地方"、
-  补完的行让 `git check-ignore -v` 真把 `strata/` 与 `strata-q2_0.json.bak` 认成忽略（备份那条是上游
-  `setup.py` 写的文件，上游的 `.gitignore` 只到 `/strata-*.json`）；`--apply` 那一条还核对了上游的
-  `.gitignore` 逐字节不变。控制台打印一条：把 stdout 换成 cp936 的字节流（`BytesIO` + `TextIOWrapper`，
-  和真控制台一样能 `reconfigure`），打印带 `U+FFFD` 的行 —— 不宽化就抛 `UnicodeEncodeError`，
-  宽化后按 UTF-8 读回来是 `git : fatal: ...`。
-- `test_harness`（7 个）：测试自己的两条规矩 —— 时间标准（`run_all.BUDGET_S` 就是 30 秒、`--timeout`
-  的默认值就是它、跑完必报秒数与"超预算"那一行）与那条跳过规则（引擎的真服务 import 不动时
-  `server_ready` 说清缺哪个包并给出 `requirements.txt`，纯标准库的 import 不算缺，没有引擎的目录
-  说"没有引擎"，当前引擎根要么起得来要么给原因，不许"起不来也没话说"）。
-- `test_console` 里的 `TestEngineEndpoint`（6 个）：`GET /neo/engine` 回页面要读的 13 个键、
-  三步的名字、两条路由接在 `console_server.py` 里、认不得的 action 挡回来、
-  `install` 走后台线程（`wait=False`，点一下不能把请求线程堵几十分钟）且 `setup=True`
-  （取完源码交给 `setup.py`，Neo 不自己装）、host 与 key 从监督器传下去。netprobe 与
-  `run_engine` 都换成假的 —— 一次 443 都不连、一次 clone 都不跑。
-  2026-10-13 补的两条钉住"接线"本身：`start()` 必须把 Handler 里 `self.server.X(...)` 用到的
-  每个名字都挂到 httpd 上（少挂一个，socketserver 把异常吞在 `handle_error` 里，连接直接关掉，
-  页面只看到 fetch 失败 —— 引擎卡当时就是转圈不动，`curl` 报 `Empty reply from server`），
-  以及 **真走一次 HTTP** 的 `GET /neo/engine`（以前只直接调 `console.engine_status()`，绕开了
-  httpd，所以挂漏没人响）。
-- `test_manager_cli`（12 个）：三个开关都不给 = 老默认（`127.0.0.1`、无 key、不打印）；`--lan` 绑
-  `0.0.0.0`、`--host` 压过 `--lan`、命令行压过 `launcher.json`；`--token` 现生成一把并打印全串、
-  落进 `launcher.json`、**不进 `manager.log`**，已有 key 时不再生成也不打印；端口优先级
-  `--port` > `launcher.json` > 发现的第一条 > 8095；`--connect` 打印的那块含 base、key、
-  `claude --model …`，且**不创建任何 agent 目录**，不认识的 agent 与没有 key 各说一句人话。
-- `test_ui` 里的接入页检查：「接入」页与顶栏 tab 在、页面里写的 `/neo/net` `/neo/lan` `/neo/token`
-  `/neo/connect` `/neo/wizard` `/neo/engine` 六条路由服务里都有、`app.js` 里每一个 `$("id")` 在 `index.html` 里都有
-  对应的 `id="..."`（这类错在窗口里是静默的：`getElementById` 回 null，取 `.textContent` 抛异常，
-  整段渲染停住，页面看着像没数据）、新样式块 `.agents`/`.agent`/`.cmd`/`.steps`/`.keyval` 在
-  `style.css` 里、`loadConnect` 在顶层；**「复制 token」那条**：按钮 `lan-copy-key` 与只读输入框
-  `lan-key-value` 在 HTML 里、输入框默认是藏着的（`class="path keyval hidden"`）、`app.js` 里
-  接了 `{"action":"reveal"}` 且生成后把完整 key 留在页面里（省得再生成一把）、
-  `.keyval.hidden` 那条补在 `.keyval` 之后（`.keyval` 的 `display:block` 定义在 `.hidden` 之后，
-  不补这一条那个框会一直露着）。
+Tests are split by test class, run in parallel (`--jobs`, default `min(4, CPU cores)`), each class
+running in a separate process (unittest's `stream` is not thread-safe, so parallelism is process-level;
+a failing class is re-run alone once, and the report says "re-run alone passed").
 
-exe 那条路是手工验的（2026-10-12，Windows 11）：`NeoStrata.exe --engine mock` 起窗口 →
-`/neo/status` 到 `running`、`Responding=True`、`neo/state/instance.json` 里 `mode="window"`；
-再开第二个实例，日志里出现带 pid / 根目录 / 界面地址 / `--force` 的那段话；关窗口后
-`instance.json` 被 `atexit` 抹掉。摘掉 js_api 桥之后重验一遍：窗口开着跑 95 秒
-`Responding=True`、日志 0 次"没应答"，`POST /neo/open` 与 `/neo/open-log` 都回 200 并真打开了
-页面 / 文件；同一个 exe 放进 `D:\Work\Strata` 跑 `--no-start`，模型页列出 4 个模型。
+- `--quick` (17 modules that don't start a real engine process) is for running during development;
+  the full suite is run before deploying.
+- **Time standard (2026-10-13): running tests must report time, and the wall time of each unit and of
+  the whole suite is capped at 30 seconds** (`BUDGET_S` in `neo/tests/run_all.py`, `--timeout` defaults
+  to it; over-budget units are reported `OK(over budget)` and the whole run is judged a failure).
+  Over budget means optimize, not raise the timeout.
+- Measured 2026-10-13 on the same machine: `--quick --skip-network` **9.6 s / 435 tests / 86 units**;
+  `--skip-network` **17.1 s / 523 tests / 101 units** (the two slowest units 5.7 s
+  `test_models.TestCatalog`, 5.1 s `test_supervisor.TestCrashStops`).
+- The one real-clone test (`test_engine_setup.TestRunAndPage`) is network-dependent: measured 6.8 s and
+  145.3 s on the same machine the same day. The full run keeps it out with `--skip-network` (that is how
+  the 30-second standard is held); to see it, run that class alone with a relaxed `--timeout`.
+- When the real service cannot start (the `.venv` in the engine root lacks upstream's packages), the
+  tests that use the real `serve/server.py` skip themselves and say which package is missing
+  (`server_ready` in `neo/tests/_bootstrap.py`: it reads imports with ast, milliseconds, no process
+  started). Measured 2026-10-13: with `jinja2` missing, that process dies at import, the supervisor
+  restarts it through the backoff again and again, tests run out their waits, and the full run went from
+  16.3 seconds to 5 minutes — this skip rule was added for exactly that.
 
-接入页那五条接口在 exe 里也逐条验过（2026-10-12，`NeoStrata.exe --engine mock --port 28180`，
-控制台 28183）：`/neo/status` `state=running` `healthy=True` `pid=6912`；`/neo/lan` 说"只绑本机
-（127.0.0.1）"、`api_key_masked` 为空、`lan_bases` 给出 `http://172.18.240.1:28180` 与
-`http://192.168.0.165:28180`；`/neo/net` 三个目标都通（huggingface.co 228 ms / hf-mirror.com
-382 ms / www.modelscope.cn 67 ms），建议源 `huggingface`；`/neo/connect` 四个配方齐、
-`base=http://127.0.0.1:28180`、模型 `mock`、上下文 32768；`/neo/wizard` 四步全 OK，命令是
-`...\python.exe ...\setup.py --port 28180 --yes --no-start`。命令行侧 `python -m neo.wizard --check`
-与 `python -m neo.connect list` 在同一台机器上打印完整（闸门不再裁整块，见"日志与控制台输出"第 5 条）。
+```
+python -m neo.tests.run_all --quick --skip-network   # during development: 17 modules, 9.6 s
+python -m neo.tests.run_all                          # before a version change: 20 modules, includes the clone test
+python -m neo.tests.run_all --no-split --jobs 1      # the old way: modules in series
+```
 
-「复制 token」这条在 mock 壳上逐条验过（2026-10-13，Windows 11 / Python 3.13，
-`ConsoleServer` + `MockEngine`，Neo 的 state 目录指到临时目录）：开局 `/neo/lan` 说没有 key；
-`POST /neo/token` 出 `sk-neo-23fb810c80e7629c12f0d26dd16c7f6e`（39 字符），`/neo/lan` 跟着只报
-`sk-neo-23fb810c…（39 字符）`；`{"action":"reveal"}` 交回同一把，连点两次都是它；
-对端不是本机时（直接调 `make_token(..., loopback=False)`）`api_key` 回空串、只给掩码；
-`unset` 后 `launcher.json` 里是空串而 key 缓存里还有 1 条；页面 `/`、`/app.js`、`/style.css`
-里 `lan-copy-key`、`lan-key-value`、`{"action":"reveal"}`、`.keyval` 都在。
+523 tests (Windows 11, Python 3.13.15, real processes started, no GPU needed, no installed model
+needed, real user configuration never touched; the only test that really uses the network is the clone
+path in `test_engine_setup.TestRunAndPage`). The mock-server path saves the 3.5 seconds the real
+`serve/server.py --engine mock` needs before it first answers `/health` — process start is 0.27 s in
+both cases. `TestStartAndReady.test_start_to_running` uses the real `serve/server.py --engine mock`:
+what it verifies is "upstream's ready line really lands in the log", which is the Neo/upstream seam and
+cannot be vouched for by a fake service.
 
-token 管到哪这条在 exe 里也验过（2026-10-13，Windows 11，`NeoStrata.exe --engine mock
---port 28190 --console-port 28193`；exe 13.3 MB，`instance.json` 里 `mode="window"`，
-窗口真起来了）：`POST /neo/token` 出 `sk-neo-cb2cc50c…`（39 字符）→ `POST /neo/stop` →
-`POST /neo/start`，服务日志里的命令行变成 `... serve/server.py --engine mock ... --port 28190
---api-key sk-neo-cb2cc50c606104ccabdaec5a7da32588`。此后本机 `GET /metrics` 无 key 回 **200**，
-`live`/`totals`/`hardware`/`hardware_static`/`requests` 五节齐（就是监控页那几张卡片要的），
-`/status`、`/slots` 无 key 200，`Host: evil.example.com` **401**，`POST /v1/chat/completions`
-无 key **401** / 带 key **200**，`GET /v1/models` 无 key **401**，`POST /settings` 无 key **401**，
-`/health` 报 `api_key=true`；`{"action":"unset"}` 之后 `/neo/lan` 的 `api_key` 为空。
-`/api/requests` 在这台机器上是 404 —— 这条路由要 `svc.api_monitor` 开着才存在，与鉴权无关。
+All the cost sits in the modules that start real processes and build real git trees, and the combined run
+is slower than the sum of its parts — measured (2026-10-13, same machine): `test_engine_setup` and
+`test_deploy` alone are 8.4 s and 5.0 s, and inside the full suite they took tens of minutes — each of
+their cases does a `git init` + one commit in a temp directory, and when Windows Defender scans the temp
+directory a single `git init` takes tens of seconds. That is why these two live in the quick suite during
+development and the full suite is reserved for before a version change. Waits that measurements changed
+(2026-10-13): `neo_console_info` probes TCP once first (0.05 s) before sending the HTTP request, so a
+port nobody listens on no longer waits out a 0.8 s timeout; the console thread runs
+`serve_forever(poll_interval=0.05)`, and `stop()` went from 0.51 s to 0.06 s. In the supervisor tests
+`poll_s` 0.25→0.05, `probe_s` 0.4→0.1, `wait()` asks every 0.05 s — waiting on a condition, not on a
+number of seconds: `test_connect_api` 39.6→6.7 s, `test_console` 34.7→9.1 s, `test_supervisor`
+70.3→56 s. The same units serialised add up to 66.1 s, and 19 modules in one `python -m unittest` run
+took 1067.1 s = 17.8 minutes (492 tests, the pre-parallelism number). After class-level parallelism the
+two slowest classes: `TestCrashRestart` 29.3→**7.0** s, `TestExternalService` 42 s (flaky under
+concurrency)→**2.6** s — deleting a test case would not have helped; what was slow was that "noticing
+the process died" waits for a full probe round. (That cell later became `TestCrashStops`: 5.1 s after
+the backoff was deleted. The slowness was fixed on the way: `_wake` stayed set once raised, so the
+`_sleep` in the port-watching layer returned immediately and that layer became a busy-wait that probes
+over and over, the supervision thread holding the GIL and slowing the status page's polling in tests;
+`_sleep` now clears the flag when it wakes, and the same cell went from 12.2 s to 5.0 s, measured
+2026-10-13 on this machine.)
 
-强杀 exe（`Stop-Process -Force`）不走 `atexit`：`neo/state/instance.json` 会留下，监督进程与
-服务进程也各自还活着（实测留下 pid 16536 听 28193、pid 42336 听 28190），要连着收端口与
-`instance.json`；正常关窗口时这三样自己就清了。
+### What each module pins
+
+- `test_supervisor`: start to ready, event records, **no auto-restart** after an unexpected exit (exit
+  code + one diagnosis + "stopped, press Start to bring it back" in the event), pressing Start after a
+  crash-and-stop really starts a new process, a user stop is not undone by a relaunch, taking over a
+  service already running, diagnosis keywords, and **the status page's metrics are real numbers** (real
+  process: `requests` is a cumulative count, no lists or objects among the values).
+- `test_engines`: config discovery and ordering (the `touch()` semantics of `setup.py`), start commands
+  using only parameters upstream already has, refusing to start when the model file is missing, the
+  bootstrap state when there is no config, the mock adapter; **the shape of real configs** (flat `args`,
+  model under `--native`, context under `--max-context`, no `path` key), **model present and engine exe
+  missing must be flagged and the start refused**, and when no model is named a config that can start is
+  picked; **the four `/metrics` sections flattened into card keys** (`TestMetricsFlatten` fed the real
+  payload: VRAM 24028 / 24455 MiB, RAM 70.6 / 93.6 GB, `requests` is 1 not a list, no invented
+  generation speed when idle); **the monitor page address goes through the console**
+  (`test_pages_monitor_goes_through_the_console`: with a `console_port`, `pages["monitor"]` is
+  `http://<host>:<console>/strata/#monitor`; without one it goes straight to upstream; the chat page
+  always goes straight to upstream).
+- `test_upstream_api`: the `serve/server.py` parameters Neo uses (`--engine/--config/--port/--host/
+  --api-key/--gpu`), the fields of `/health`, the **four sections of `/metrics` and the keys inside
+  them** (`live` / `totals` / `hardware` / `hardware_static`), the key only gating inference routes,
+  the read-only monitoring endpoints answering loopback peers, and Neo's patch markers staying absent.
+  Measured 2026-10-13: the four `/metrics` sections and the keys inside them (`live` / `totals` /
+  `hardware` / `hardware_static`, plus `cpu` / `ram_used` / `mem_used` in `serve/telemetry.py`), the chat
+  and monitor page files, setup.py's M2 parameters, and upstream's `requirements.txt` untouched. When
+  upstream renames something, this test rings first — not the user's Neo failing to start.
+  **`test_the_monitor_channel_needs_no_upstream_change` watches the reverse**: `serve/server.py` must not
+  contain the local-exemption patch markers (`loopback_peer`, `_authorized(self, monitor: bool = False)`,
+  `_authorized(monitor=True)`), while the monitor page and those read-only endpoints must still be there —
+  the monitor page reads through Neo's `/strata/` channel, not through a patched upstream.
+- `test_console`: the status endpoint, static pages served `no-store`, an engine that cannot start
+  staying stopped with a reason (no auto-restart), foreign Origin and foreign Host 403, settings persisted
+  without echoing the API key; **the page's "open" buttons go through the service** (`POST /neo/open` with
+  a page, `POST /neo/open-log`, 503 when there is no shell, foreign Origin 403 with the shell never
+  called); **the second-instance message** (window mode names the pid and the interface address, browser
+  mode says "no window" and gives the pywebview install command, and when the recorded process is gone it
+  says "it is already gone" and clears the stale record); **the model-settings group**
+  (`TestModelSettingsEndpoint`, 10): the form shape of `GET /neo/model/settings`, `?model=` accepting both
+  id and file name, the first config when nothing is named, a named-but-unknown model listing the menu and
+  **writing nothing**, `POST` writing the override config from the exact form `app.js` sends (`--max-context`
+  and `--vision` land, an unpaired `--kv-resident` is removed), out-of-range answers `ok:false` with an
+  explanation and **the config bytes untouched**, `action:"reset"` deleting the override with the upstream
+  file untouched, things that need a restart answering `restart_required` with the pid; **the `/strata/`
+  read-only channel group** (`TestStrataChannel`, 9, against a fake upstream): the page and its js/css all
+  proxied, panel endpoints answered with the key Neo attaches server-side and the response carrying no key,
+  query strings passed through verbatim, `POST` always 405, `/v1/chat/completions` never proxied, paths
+  outside the whitelist never proxied, upstream down → 502, `/strata` not shadowing Neo's own `/neo/*`, and
+  the channel's path constants matching the monitor address `engines/base.py` produces.
+- `test_ui` (65): the gate's `write()` returning immediately when another thread holds the lock, counting
+  the dropped lines and saying so, normal output untouched when nobody contends; `state.log()` appending in
+  the normal case (20 lines = 20 writes, 0 `\r`), trimming only past `LOG_MAX` and keeping the tail, 6
+  threads writing 90 lines concurrently with nothing lost and nothing interleaved; the watchdog not
+  starting without a window, thread snapshots bounded and carrying thread names, "no answer" plus the
+  `neo-ui-probe` frame in the log when `evaluate_js` is frozen and no log line when the window answers
+  normally; `window_kwargs()` containing no `js_api` (x/y only when coordinates exist), `app.js` containing
+  no `window.pywebview` and carrying the `/neo/open` and `/neo/open-log` routes; **`app.js`'s braces
+  balancing with `render`/`poll`/`ensureFrame`/`num`/`count` at top level, and the trailing `poll();` and
+  `setInterval(poll, 2000);` at top level** (the measured incident where the embedded frames sat at
+  `about:blank` was code swallowed into a function body); **the six status cards passing only through
+  `num()` / `count()`** (things like `m.requests` must not be interpolated straight into template strings;
+  `count()` answers "—" for lists and objects); **packaging is refused when the build environment lacks
+  packages**, with the install command given, `--no-webview` really reaching `build(allow_no_webview=True)`,
+  and both packages missing listed in one message (`test_build_names_every_missing_dep_at_once` — the
+  deploy tree's `.venv` is exactly such an environment); **the language/theme group**
+  (`TestLanguageAndTheme`, 9): `i18n.js` syntax balanced, `BLOCKS`/`PHRASES`/`ATTRS` complete with
+  `applyLang`/`applyTheme`/`init` at top level, every `data-i18n` key in `index.html` present in `BLOCKS`
+  (a missing key means that block never switches), `data-i18n` never wrapping a control (wrapping one
+  erases the dropdowns and buttons), every `t("中文")` literal in `app.js` present in `PHRASES`, the
+  Chinese `placeholder`/`title` strings in the HTML present in `ATTRS`, the two top-bar buttons and
+  `.nav-prefs` present in HTML and CSS, and **no hard-coded colours in any rule outside `:root` and
+  `html[data-theme="light"]`** (one component rule hard-coded `#fff` and became a white patch in the light
+  theme); **the two `<script>` files must not declare the same top-level name** (top-level names chained in
+  `index.html`'s load order — the incident where the status stayed "Not started" and every click was dead
+  was `t` colliding with `applyLang`).
+- `TestWebCheck` inside `test_ui` (8): `neo/webcheck.py`'s check and the packaging gate — a clean real tree
+  passes `build_exe.web_gate()`; removing i18n.js's IIFE makes the gate refuse and name the two files, the
+  two lines and the colliding name; when node exists the concatenated program is handed to V8 and the
+  report quotes the browser's own words (`already been declared`), and when node is absent the check must
+  not pretend it ran; a missing brace is reported, a missing top-level `poll();` and `setInterval(poll` is
+  reported, a `<script>` pointing at a missing file is reported, and more than 40 top-level names must be
+  collected (otherwise this check is not running at all).
+- `test_logging` (25): 0 `\r` in the log after 8 consecutive writes (the CRLF-amplification regression), a
+  200,000-character single line trimmed with its original length marked, cleaning the tail without losing
+  history; `tail_text` stripping `\r` and control characters, capping line count and marking "N lines
+  omitted"; the gate bounded under an 1.8-billion-character flood, reporting what was folded and how much
+  was dropped, normal output untouched; **the 40 lines of one print passing as one whole block** (the CLI's
+  JSON not sliced in half), **a second 40-line block inside one second dropped for exceeding the
+  allowance**, a 500-line one-line-per-write flood still compressed under 120 lines, **`install()` wrapping
+  only streams whose `isatty()` is true** (pipes and `StringIO` untouched) and being idempotent;
+  `clean_line` behaviour; `RecursionError` never formatted into a traceback, ordinary tracebacks capped in
+  lines and total length, the excepthook installing; `safe_resolve` truncating a 5000-segment `.SyncRoot`
+  path to under 64 segments, relative paths and `..` behaving, `is_reparse` answering False for a normal
+  directory; `instance.json` recorded / read back / cleared, only `mode` patched without erasing `root`, a
+  record whose process is gone counting as stale.
+- `test_model_settings` (38): one test for each of the three traps (turning images off must delete the
+  section too, `--kv-resident` must be deleted together with its value, `"off"` is not truthy); plus the
+  shape of `view`'s form (`model_id`/`config_name`/`fields`/`options`/`estimate`/`overridden`/
+  `restart_required`), override configs landing in `neo/state/configs/` with the upstream file's bytes
+  untouched, `clear` returning to the original, keys identical to upstream never written into the override
+  (that copy being deleted), `config_path_for` pointing at whichever file exists, the VRAM estimate (q4_0 16
+  units = 128 MiB, int8 same shape = 234 MiB, KV residency off = 0), the GGUF header (a synthetic file and
+  the real `qwen3.8-flash-mlx-32b-ikd-q4.p1.gguf`'s 48 layers, corrupt and truncated files not raising,
+  reading the header never exceeding 1 MiB).
+- `test_netprobe` (12): the injected `connect` recording address family / port / timeout, all four targets
+  going over 443; all reachable recommending the default source, HF down + ModelScope up recommending
+  `--source modelscope`, only the mirror up only mentioning `HF_ENDPOINT` without switching source, nothing
+  reachable recommending nothing; `github.com` only feeding the "engine source tree reachable" column and
+  never the model-source recommendation; cache read/write with a corrupt file falling back to empty,
+  `probe_cached` not touching the network, `describe` stating the recommendation.
+- `test_tokens` (16): the key shape `sk-neo-` + 32 hex characters with 100 generated all distinct, the mask
+  never containing the full key, a cache hit on the same base returning the same key with the file storing
+  plaintext (the interface only ever echoes the mask), `forget_key` deleting the cache, the firewall hint
+  absent for loopback and present for `0.0.0.0` with the port, `base_for` mapping `0.0.0.0` to this
+  machine's address, `looks_like_key` accepting both `sk-neo-` and `sk-` shapes.
+- `test_connectors` (26): the four agents' landing points honouring `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/
+  `XDG_CONFIG_HOME`/`OPENCLAW_HOME`; **merging** (the user's `permissions` / `[model_providers.other]` /
+  `provider.other` / `models.providers.other` all intact after Neo wires in); **idempotence** (run twice,
+  one provider block, the values inside following a new port); **backup first** (`.neo-bak` holds the
+  pre-wiring content); **broken files untouched** (truncated JSON answering "your file was not modified",
+  bytes identical); Claude's base **without `/v1`** and its unset list containing `ANTHROPIC_API_KEY` /
+  `CLAUDE_CODE_OAUTH_TOKEN`; Codex's `wire_api = "responses"` and `requires_openai_auth = false` with the
+  profile layer; OpenCode's `neo/` prefix and `output_limit = 32000` (window 131072) with the compaction
+  reserve; OpenClaw's `api = "openai-completions"` and `primary = neo/<id>` with `memory.search` and
+  `shellEnv` switched off; with no key the unset list is empty and a "create a key first" hint appears;
+  both the PowerShell and the POSIX command blocks present.
+- `test_wizard` (26): the command is `setup.py --yes --no-start` with the port passed along, `--no-start`
+  mandatory (the service belongs to the supervisor), `--host` only present with `--host 0.0.0.0` and
+  carrying the key, `--source` added only when modelscope was probed, never changed when the user named
+  hf, the source placed before `--yes`; among the four steps "LAN without a key" counts as not ready, and
+  a missing `setup.py` is stated; a real run (a stub `setup.py` in a temp directory) lands its command line
+  and output in `logs/wizard.log`, and nothing runs when `setup.py` is missing.
+- `test_connect_api` (28): `GET /neo/net` not touching the network (fed from cache), `GET /neo/lan`
+  reporting the binding and mask with no firewall hint on loopback, and giving LAN addresses plus a
+  port-carrying firewall command when bound to `0.0.0.0`; `POST /neo/token` landing the generated key in
+  `launcher.json`, in the key cache and with the supervisor, the response carrying the full key and the
+  mask; `{"action":"reveal"}` handing back **the same key** with the bytes of `launcher.json` and the key
+  cache untouched, plainly saying "no token" when there is none, and only the mask for non-loopback peers
+  (`api_key` returning an empty string); `unset` clearing the key on the service while the cache keeps it,
+  `forget` deleting the cache, a bad action writing nothing and generating no key; `GET /neo/connect`
+  returning all four recipes and **writing no files**, `POST /neo/connect` writing into a temp directory
+  and leaving backups, an unknown agent answering an explanation; `GET /neo/wizard` returning the four
+  steps with the probed source recommendation; `GET /neo/catalog` listing the menu and this machine;
+  `POST /neo/install` running the print-only fake `setup.py` in a temp directory (command line and output
+  into `wizard.log`), refusing items not in the menu / not runnable in the plan / already running, without
+  starting a subprocess; the download-source row: four options present, the remembered source entering the
+  install command, the mirror only adding `HF_ENDPOINT` and no `--source`, an unrecognised source refused
+  and `source.json` not written; `?fresh=1` not holding up the probe; **the five read endpoints write not
+  one file**.
+- `test_connect_cli` (8): `list` naming the four agents and each one's config file, an unknown agent
+  returning 2 and listing the choices; `--json` emitting the whole recipe (base, env, unset list, commands,
+  the PowerShell and POSIX blocks) and **creating no directories**, and with `--key` given writing no key
+  cache; `--base` overriding `--host`/`--port` (it is what lands in `config.toml`'s `base_url`); the key's
+  origin stated, with a reminder when the service has no key; `--persist` writing only the two files in the
+  temp directory, each with a `.neo-bak` holding the user's original content, and running twice leaving
+  exactly one `[model_providers.neo]` block.
+- `test_paths` (14): `strata_root()`'s five-step order (a directory with `setup.py` + `serve/server.py`
+  beats `<app>/strata`; `<app>/strata` beats the app directory itself; `NEO_STRATA_ROOT` beats both;
+  `--root` beats the environment variable); the root the CLI resolves is the same directory the
+  `Manager` uses; **the CLI's default root is not "one level above neo/"** (after the repo split that
+  parent is not the engine root; `--check` must not print a command pointing at a non-existent
+  `<repo root>/setup.py`); `--root` overriding the default; the report naming which rule matched.
+- `test_engine_setup` (14): the pin file's four fields, cloning the pinned tag (a local `file://` tree
+  carrying a tag), **the digest gate** (a zip with a recomputed SHA-256 unpacks; a zip that does not match
+  is refused and the target directory stays empty), a missing `engine_ref.json` stated, a missing zip
+  telling you to run `--fetch`, `--fetch` only downloading and checking the digest without unpacking,
+  `--ensure` unpacking after a hit, a source tree with `setup.py` and `serve/server.py` saying "no need to
+  fetch", the clone command carrying `--branch <tag> --depth 1` and **not containing the user's
+  credentials**, the digest gate refusing a zip whose content changed, and the clone's return code
+  landing in the log.
+- `test_deploy` (29): one test per gate — engine (HEAD == pin and clean to pass; a HEAD that is not the
+  pin blocks; dirty tracked files block; **no git does not count as clean**; **the deploy tree's own
+  untracked Neo files do not count as dirty**), paths (`neo/state/`, `__pycache__/`, `build/`, `dist/`
+  never carried; the exe not in the source manifest; every file classified new / update / same; extra
+  files in the target reported), process (a missing exe blocks, a running instance blocks); dry-run
+  writes not one file; `--apply` verifies SHA-256 file by file, refuses a tree whose gates fail,
+  `--prune` deletes only "Neo files the source no longer has"; `--json` is JSON and states whether gates
+  passed; the report names the gates and the counts; omitting `--to` is an error; a pin that does not
+  match the target tree blocks and is reported. The local-ignore entry (`.git/info/exclude`) has six
+  tests: missing lines appended in one pass, the second run writing not one byte (no duplicates), dry-run
+  only reporting, a non-git target answering "nowhere to write", and the appended lines making
+  `git check-ignore -v` really treat `strata/` and `strata-q2_0.json.bak` as ignored (the backup entry is
+  a file upstream's `setup.py` writes; upstream's `.gitignore` only covers `/strata-*.json`); the
+  `--apply` test also verified upstream's `.gitignore` byte-for-byte unchanged. One console-printing
+  test: stdout swapped for a cp936 byte stream (`BytesIO` + `TextIOWrapper`, `reconfigure`-able like a
+  real console), printing a line containing `U+FFFD` — without widening it throws `UnicodeEncodeError`,
+  after widening, reading it back as UTF-8 gives `git : fatal: ...`.
+- `test_harness` (7): two rules about the tests themselves — the time standard (`run_all.BUDGET_S` is 30
+  seconds, `--timeout`'s default is that value, every run must report seconds and the "over budget" line)
+  and the skip rule (when the real engine service cannot import, `server_ready` names the missing package
+  and points at `requirements.txt`; pure-stdlib imports never count as missing; a directory with no engine
+  says "no engine"; the current engine root must either start or give a reason — "cannot start, no
+  explanation" is not allowed).
+- `TestEngineEndpoint` in `test_console` (6): `GET /neo/engine` returning the 13 keys the page reads, the
+  three step names, the two routes wired inside `console_server.py`, an unrecognised action refused,
+  `install` running on a background thread (`wait=False` — a click must not block the request thread for
+  tens of minutes) with `setup=True` (the source tree handed to `setup.py`, Neo never installs by hand),
+  host and key passed down from the supervisor; netprobe and `run_engine` both faked — not one 443
+  connection, not one clone. The two tests added 2026-10-13 pin the wiring itself: `start()` must attach
+  to the httpd every name the Handler uses via `self.server.X(...)` (miss one and socketserver swallows
+  the exception in `handle_error`, the connection closes, the page only sees a failed fetch — the engine
+  card was spinning, `curl` reported `Empty reply from server`), and **a real HTTP round trip** of
+  `GET /neo/engine` (previously only `console.engine_status()` was called directly, bypassing the httpd,
+  so a missing attachment never rang).
+- `test_manager_cli` (4): the root `Manager` uses is the root `resolve_root()` computes; `--root`
+  overriding it; the report naming the rule; the root written into `launcher.json` is that root.
+- The Connect page checks inside `test_ui`: the page's five rows and the two buttons, `app.js`'s
+  `renderConnect` reading the fields of `/neo/wizard` and `/neo/connect`, the token button's
+  `{"action":"reveal"}`, the copy button's `navigator.clipboard` with a `textarea` fallback, the
+  `lan-key-value` row, the four agent cards' copy commands, the download-source row reading
+  `/neo/wizard`'s `source_options` and `source_recommendation`, the install button's
+  `POST /neo/install` with `model_id` and `source`, the wizard log's `POST /neo/open-log` with
+  `wizard.log`; **the token's full string never appearing in the HTML** (the page only gets the mask, the
+  full string only from a loopback `reveal`); **the install button's debounce** (the button disabled
+  before the request goes out, `renderConnect` not re-enabling it, `renderConnect` called after the
+  response, the button re-enabled in the `finally` branch).
+
+## Manual verification on the exe path
+
+The exe path is verified by hand (2026-10-12, Windows 11): `NeoStrata.exe --engine mock` opens a window →
+`/neo/status` reaches `running`, `Responding=True`, `neo/state/instance.json` records `mode="window"`;
+opening a second instance puts the message with pid / root / interface address / `--force` in the log;
+closing the window makes `atexit` erase `instance.json`. Re-verified after the js_api bridge was removed:
+window open for 95 seconds with `Responding=True`, 0 "no answer" in the log, `POST /neo/open` and
+`/neo/open-log` both answering 200 and really opening the page / file; the same exe placed in
+`D:\Work\Strata` running `--no-start`: the model page lists 4 models.
+
+The five Connect endpoints were verified one by one inside the exe (2026-10-12,
+`NeoStrata.exe --engine mock --port 28180`, console 28183): `/neo/status` `state=running` `healthy=True`
+`pid=6912`; `/neo/lan` says "bound to loopback only (127.0.0.1)", `api_key_masked` empty, `lan_bases`
+giving `http://172.18.240.1:28180` and `http://192.168.0.165:28180`; `/neo/net` with all three targets
+reachable (huggingface.co 228 ms / hf-mirror.com 382 ms / www.modelscope.cn 67 ms), recommended source
+`huggingface`; `/neo/connect` with all four recipes, `base=http://127.0.0.1:28180`, model `mock`, context
+32768; `/neo/wizard` with all four steps OK, the command
+`...\python.exe ...\setup.py --port 28180 --yes --no-start`. On the command line,
+`python -m neo.wizard --check` and `python -m neo.connect list` print in full on the same machine (the
+gate no longer drops whole blocks — see "Logs and console output", item 5).
+
+The "copy token" path was verified one step at a time on a mock shell (2026-10-13, Windows 11 /
+Python 3.13, `ConsoleServer` + `MockEngine`, Neo's state directory pointed at a temp directory): at the
+start `/neo/lan` says there is no key; `POST /neo/token` produces `sk-neo-23fb810c80e7629c12f0d26dd16c7f6e`
+(39 characters), `/neo/lan` then reports only `sk-neo-23fb810c… (39 characters)`; `{"action":"reveal"}`
+hands back the same key, twice in a row; when the peer is not this machine (calling
+`make_token(..., loopback=False)` directly) `api_key` returns an empty string and only the mask; after
+`unset`, `launcher.json` holds an empty string while the key cache still holds 1 entry; in the pages `/`,
+`/app.js`, `/style.css` the strings `lan-copy-key`, `lan-key-value`, `{"action":"reveal"}` and `.keyval`
+are all present.
+
+Token coverage was verified in the exe too (2026-10-13, Windows 11,
+`NeoStrata.exe --engine mock --port 28190 --console-port 28193`; exe 13.3 MB, `instance.json`
+`mode="window"`, the window really up): `POST /neo/token` produces `sk-neo-cb2cc50c…` (39 characters) →
+`POST /neo/stop` → `POST /neo/start`, and the service log's command line becomes
+`... serve/server.py --engine mock ... --port 28190 --api-key sk-neo-cb2cc50c606104ccabdaec5a7da32588`.
+After that, on this machine `GET /metrics` without a key answers **200** with all five groups
+`live`/`totals`/`hardware`/`hardware_static`/`requests` (exactly what the monitor page's cards need),
+`/status` and `/slots` answer 200 without a key, `Host: evil.example.com` **401**,
+`POST /v1/chat/completions` without a key **401** / with a key **200**, `GET /v1/models` without a key
+**401**, `POST /settings` without a key **401**, `/health` reports `api_key=true`; after
+`{"action":"unset"}` the `api_key` in `/neo/lan` is empty. `/api/requests` is 404 on this machine — that
+route only exists when `svc.api_monitor` is on, which has nothing to do with authentication.
+
+Force-killing the exe (`Stop-Process -Force`) does not run `atexit`: `neo/state/instance.json` stays, and
+the supervisor process and the service process each stay alive (measured: pid 16536 listening on 28193 and
+pid 42336 listening on 28190 left behind) — you have to take the ports and `instance.json` together;
+closing the window normally clears all three on its own.
+
+## Measured pitfalls on pywebview 6.2.1
+
+- `create_window()` does not accept `min_width` / `min_height` / `confirm`: the window parameters are
+  `min_size=(w, h)` and `confirm_close`; `private_mode` and `storage_path` belong to `webview.start()`.
+  A wrong parameter throws `TypeError` at startup; `neo/manager.py` recognises that exception and falls
+  back to a minimal parameter set.
+- `webview.start(icon=...)` with an SVG makes the Windows backend's `System.Drawing.Icon.Initialize` throw
+  `ArgumentException`, crashing on the window thread (Neo's icon is an SVG, so no icon is passed).
+- With `confirm_close=True`, `window.destroy()` pops a confirmation dialog and blocks: the page's "quit"
+  turns `confirm_close` off before destroying.
+- When a real page opens, pywebview writes a string of WinForms font-recursion internal logs to stderr
+  (`window.native.ActiveControl...GenericSansSerif`); window function is unaffected, it is noise.
+
+## End-to-end check
+
+`python neo/tests/manual_end_to_end.py` really starts the desktop shell once (mock engine, service port
+28080, console 28083): ready in 2 seconds (`state=running`, `healthy=true`, `max_context=32768`), the
+status / model / log endpoints all answering; then the shell process is killed to simulate being ended by
+Task Manager, and 3 seconds later service port 28080 is closed — the Job Object took the Strata service
+with it, no leftover process. The browser fallback path was verified the same way (`--no-webview`, console
+28093, `state=running healthy=true`, port closed after killing the shell).
+
+## Known boundaries
+
+- **The window is a container; all actions go through the service.** The page has no Python bridge
+  (`js_api` removed, see "Clicking made the window '(Not responding)'"); the window thread only pumps
+  messages. The watchdog only writes logs and does not fix the window.
+- **The windowed run is not covered by tests** (pywebview needs a real window), so the window path is
+  guarded by three layers: `neo/webcheck` (static checks of page scripts and endpoints), the
+  `TestClickPathIsHttpOnly`-style tests (pinning "no bridge, all actions through the service"), and
+  `neo/ui_watchdog.py` (writes a log when the window thread stops pumping messages).
+- **The agent connector writes real config files** (`~/.claude/settings.json`, Codex's
+  `config.toml`); it only merges keys and never overwrites the file, and backs up to
+  `neo/state/backups/` first.
+- **The model download is a detached subprocess**; the window only shows the tail of the log.
+- **The `/strata/` proxy only forwards GET/HEAD and only the fixed path menu**; it does not forward
+  inference routes, and the page carries no API key.
+- **The engine source tree is pinned to a tag**; it is cloned/extracted only after the SHA-256 matches
+  the pinned value.
+- Changing the port needs a Neo restart to take effect (M1 has no hot switch).
+- The chat and monitor pages are embedded upstream pages. **The monitor page needs no key on this
+  machine**: the read-only endpoints like `GET /metrics` are reached through Neo's `/strata/` channel (see
+  "What the token covers"), and the window's cards keep producing numbers after a token is set. The chat
+  page needs a key — "Generate token" on the Connect page exists for exactly that; the key is shown in
+  full only on the one generation, after that the UI only has the mask (the "Copy token" button hands back
+  the current one).
+- Opening the LAN, generating a token and wiring the four agents all live on the Connect page; **the
+  default is still `127.0.0.1` only, with no key**.
+- The firewall command is **given, never executed** — the user runs it with administrator rights; without
+  it, other machines on the LAN cannot connect.
+- The wiring recipes write the agents' config files, and Neo **does not check whether the agent is
+  installed**: with the agent absent the config file is still written correctly and works once the agent
+  is installed; when an agent changes its config format (Claude / Codex / OpenCode / OpenClaw all move
+  fast), Neo follows the reference implementation's shape, and a format change means the recipe must
+  change with it (`test_connectors.py` is what watches that shape).
+- When the wizard runs `setup.py` it does not stream output; the page reads the tail of
+  `logs/wizard.log` every 5 seconds, and only one install may run at a time.
+- With no model installed the onboarding page shows (no `strata-*.json` in the root); the Connect page's
+  wizard brings `setup.py`'s checks and install process into this window.
+- `neo/state/` (runtime data) and `neo/state.py` (the module) share a name: running a script from inside
+  the `neo/state/` directory makes `import neo.state` hit the directory instead of the module (measured:
+  `python neo\state\repro\hook.py` reports `AttributeError: module 'neo.state' has no attribute
+  'install_excepthook'`). Run Neo's code from the repository root; the repro scripts under
+  `neo/state/repro/` insert the root into `sys.path` themselves.
+
+## For maintainers
+
+- The design doc is the source of truth for behavior; code and doc are updated together.
+- Measured numbers must carry the machine and date they were measured on; no conclusions without
+  measurement.
+- Upstream changes go through the fork (`neoneo-ai/Neo-Strata`, renamed `strata-upstream`);
+  `neo/tests/test_upstream_api.py` watches upstream's shape, and Neo's patch markers must stay absent.
+- Docs style: plain words, measured numbers with the machine they were measured on, no conclusions
+  without measurement.
 
 
-## 已知边界
-
-- 端口改了要重启 Neo 才生效（M1 不做热切换）。
-- 聊天页与监控页是内嵌上游页面。**监控页在本机不要 key**：`GET /metrics` 那批只读端点对本机对端
-  放行（见上节「token 管到哪」），设了 token 之后窗口里的卡片照旧出数。聊天页要 key ——「接入」页的
-  "生成 token"就是给这件事用的，key 只在生成那一次完整显示，之后界面上只有掩码（「复制 token」一键
-  拿当前这把）。
-- 局域网开放、token 生成、四个 agent 的接线在「接入」页（见上节）；**默认仍只绑 `127.0.0.1`、不带 key**。
-- 防火墙那条命令**只给不执行**，要用户用管理员权限自己跑；不跑它，局域网里的别的机器连不上。
-- 接线配方写的是 agent 的配置文件，Neo **不看 agent 装没装**：agent 不在时配置文件照样写对，
-  装上就能用；agent 自己改了配置格式（Claude / Codex / OpenCode / OpenClaw 都在快速变动），
-  Neo 认的是参考实现那一份形状，格式变了配方就要跟着改（`test_connectors.py` 盯的就是这一份形状）。
-- 向导跑 `setup.py` 时不流式转发输出，页面每 5 秒读一次 `logs/wizard.log` 尾部；
-  一次只允许一个安装在跑。
-- 未安装模型时显示引导页（根目录没有 `strata-*.json`），「接入」页的安装向导会把 `setup.py` 的
-  检查和安装过程搬进这个窗口。
-- `neo/state/`（运行数据）与 `neo/state.py`（模块）同名：在 `neo/state/` 目录里直接跑脚本时，
-  `import neo.state` 会命中那个目录而不是模块（实测 `python neo\state\repro\hook.py` 报
-  `AttributeError: module 'neo.state' has no attribute 'install_excepthook'`）。跑 Neo 的代码要在仓库根，
-  `neo/state/repro/` 下的复现脚本自己把根插进 `sys.path`。
-
-## pywebview 6.2.1 上的实测坑
-
-- `create_window()` 不认 `min_width` / `min_height` / `confirm`：窗口参数是 `min_size=(w, h)` 和
-  `confirm_close`；`private_mode` 与 `storage_path` 属于 `webview.start()`。参数给错会在启动时抛
-  `TypeError`，`neo/manager.py` 认这个异常并退回最小参数集。
-- `webview.start(icon=...)` 给 SVG 会让 Windows 后端的 `System.Drawing.Icon.Initialize` 抛
-  `ArgumentException`，崩在窗口线程里（Neo 的图标是 SVG，所以不传 icon）。
-- `confirm_close=True` 时 `window.destroy()` 会弹确认框并卡住：页面里的"退出"先把
-  `confirm_close` 关掉再 destroy。
-- 打开真实页面时 pywebview 会往 stderr 打一串 WinForms 字体递归的内部日志
-  （`window.native.ActiveControl...GenericSansSerif`），窗口功能不受影响，是噪音。
-
-## 端到端检查
-
-`python neo/tests/manual_end_to_end.py` 真起一次桌面壳（mock 引擎，服务端口 28080，控制台 28083）：
-2 秒到就绪（`state=running`、`healthy=true`、`max_context=32768`），状态/模型/日志接口都有应答；
-然后把桌面壳进程杀掉模拟被任务管理器结束，3 秒后服务端口 28080 已关闭 —— Job Object 把
-Strata 服务带走了，没有残留进程。浏览器退回路径同样验过（`--no-webview`，控制台 28093，
-`state=running healthy=true`，杀壳后端口关闭）。
 
